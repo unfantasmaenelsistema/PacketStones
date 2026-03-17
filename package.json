@@ -1,0 +1,10 @@
+{
+  "name": "packet-stones",
+  "version": "1.0.0",
+  "description": "Simulador de redes educativo - Packet Stones",
+  "scripts": {
+    "install": "cd frontend && npm install",
+    "start": "cd frontend && npm run dev",
+    "build": "cd frontend && npm run build"
+  }
+}

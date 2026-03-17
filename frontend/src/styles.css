@@ -1,0 +1,127 @@
+/* ============================================================
+   styles.css  —  Reset y estilos globales de Packet Stones
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@300;400;500;600&display=swap');
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: #0d0d12;
+  color: #e8e8f0;
+  font-family: 'DM Sans', 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbars dark */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #2e2e3a; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #3a3a50; }
+
+/* Botones base */
+button {
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+button:hover {
+  filter: brightness(1.1);
+}
+
+button:active {
+  transform: scale(0.97);
+}
+
+/* Inputs base */
+input, textarea, select {
+  font-family: inherit;
+  color: #e8e8f0;
+}
+
+input:focus, textarea:focus, select:focus {
+  outline: none;
+  border-color: #7c5cfc !important;
+  box-shadow: 0 0 0 2px rgba(124, 92, 252, 0.15);
+}
+
+/* Range inputs */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: #1e2a45;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  background: linear-gradient(135deg, #7c5cfc, #c084fc);
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 0 6px rgba(124, 92, 252, 0.4);
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  background: linear-gradient(135deg, #7c5cfc, #c084fc);
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+}
+
+/* Seleccionar estilos en paneles */
+select {
+  background: #1a1a24;
+  border: 1px solid #2e2e3a;
+  border-radius: 8px;
+  padding: 6px 10px;
+  color: #e8e8f0;
+  font-size: 12px;
+}
+
+select option {
+  background: #1a1a24;
+  color: #e8e8f0;
+}
+
+/* Animación de pulso para indicadores de estado */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.pulse {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* Tooltip nativo mejorado */
+[title] {
+  cursor: help;
+}
+
+/* Overlay glassmorphism */
+.glass {
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
