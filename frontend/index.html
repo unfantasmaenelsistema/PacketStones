@@ -1,12 +1,26 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="es" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Packet Stones — Simulador de Redes</title>
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌐</text></svg>" />
+    <title>Packet Stones — Simulador de redes</title>
+    <meta name="description" content="Simulador de redes educativo en el navegador: switches, routers, ARP, tablas MAC, rutas estáticas, RIP, DHCP y ping paso a paso. Gratis y sin instalación." />
+    <meta name="theme-color" content="#0d0d12" />
+    <meta property="og:title" content="Packet Stones — Simulador de redes" />
+    <meta property="og:description" content="Construye una red y mira cada paquete: ARP, tablas MAC, enrutamiento, TTL, RIP y DHCP." />
+    <meta property="og:image" content="og.png" />
+    <link rel="icon" type="image/png" href="favicon.png" />
+    <link rel="apple-touch-icon" href="logo.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+    <script>
+      // Tema guardado antes de pintar, para no ver un destello
+      try { var t = localStorage.getItem('ps_theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+    </script>
   </head>
   <body>
+    <noscript>Packet Stones necesita JavaScript. / Packet Stones requires JavaScript.</noscript>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

@@ -1,127 +1,155 @@
 // ============================================================
 //  engine/algorithms/RoutingEngine.ts
-//  Motor de enrutamiento: longest-prefix match + RIP básico
+//  Tablas de rutas: redes conectadas, rutas estáticas y RIP
 // ============================================================
 
-import { Device, RouteEntry, Link } from '@/types/network';
-import { ipInNetwork, maskToPrefix } from './NetworkUtils';
+import { Device, Link, LogMessage, RouteEntry } from '@/types/network';
+import { TopologyView } from './Topology';
+import { hasValidAddress, ipInNetwork, maskToPrefix, networkAddress } from './NetworkUtils';
+
+const RIP_INFINITY = 16;
+
+const keyOf = (r: { destination: string; subnetMask: string }) => `${r.destination}/${maskToPrefix(r.subnetMask)}`;
 
 /**
- * Busca la mejor ruta (longest prefix match) para una IP destino.
- * Devuelve la entrada de ruta o null si no hay.
+ * Longest-prefix match: la ruta más específica que contiene la IP destino.
+ * A igual prefijo gana la de menor distancia administrativa (conectada < estática < RIP).
  */
-export function findBestRoute(
-  router: Device,
-  destinationIp: string
-): RouteEntry | null {
-  if (!router.routingTable || router.routingTable.length === 0) return null;
-
-  let bestRoute: RouteEntry | null = null;
+export function findBestRoute(router: Device, destinationIp: string): RouteEntry | null {
+  const rank = { connected: 0, static: 1, rip: 2 } as const;
+  let best: RouteEntry | null = null;
   let bestPrefix = -1;
-
-  for (const route of router.routingTable) {
-    if (ipInNetwork(destinationIp, route.destination, route.subnetMask)) {
-      const prefix = maskToPrefix(route.subnetMask);
-      if (prefix > bestPrefix) {
-        bestPrefix = prefix;
-        bestRoute = route;
-      }
+  for (const route of router.routingTable ?? []) {
+    if (!ipInNetwork(destinationIp, route.destination, route.subnetMask)) continue;
+    const prefix = maskToPrefix(route.subnetMask);
+    if (prefix > bestPrefix || (prefix === bestPrefix && best && rank[route.type] < rank[best.type])) {
+      best = route;
+      bestPrefix = prefix;
     }
   }
-
-  return bestRoute;
+  return best;
 }
 
 /**
- * Propaga rutas RIP entre routers conectados directamente.
- * Implementación simplificada: comparte rutas directamente conectadas
- * con vecinos con metric+1 (split horizon no implementado por simplicidad).
+ * Redes directamente conectadas de un router: solo interfaces con IP válida
+ * y línea arriba (cable conectado, enlace y extremo remoto activos), como en IOS.
  */
-export function propagateRip(
-  devices: Device[],
-  links: Link[]
-): Device[] {
-  const routers = devices.filter(d => d.type === 'router' && d.status === 'up');
-  const updated = devices.map(d => ({ ...d, routingTable: [...(d.routingTable ?? [])] }));
-
-  for (const router of routers) {
-    // Encontrar routers vecinos (conectados por un link activo)
-    const neighborLinks = links.filter(
-      l =>
-        l.status === 'up' &&
-        (l.sourceDeviceId === router.id || l.targetDeviceId === router.id)
-    );
-
-    for (const link of neighborLinks) {
-      const neighborId = link.sourceDeviceId === router.id
-        ? link.targetDeviceId
-        : link.sourceDeviceId;
-
-      const neighbor = updated.find(d => d.id === neighborId);
-      if (!neighbor || neighbor.type !== 'router' || neighbor.status !== 'up') continue;
-
-      const routerIdx = updated.findIndex(d => d.id === router.id);
-      const neighborRoutes = neighbor.routingTable ?? [];
-
-      for (const route of neighborRoutes) {
-        // No anunciar rutas con metric >= 15 (RIP max hops)
-        if (route.metric >= 15) continue;
-
-        const exists = updated[routerIdx].routingTable?.some(
-          r => r.destination === route.destination &&
-               r.subnetMask === route.subnetMask &&
-               r.metric <= route.metric + 1
-        );
-
-        if (!exists) {
-          // Obtener IP del neighbor en el interfaz conectado
-          const neighborIface = neighbor.interfaces.find(
-            i => i.connectedLinkId === link.id && i.status === 'up'
-          );
-          if (!neighborIface) continue;
-
-          updated[routerIdx].routingTable?.push({
-            destination: route.destination,
-            subnetMask: route.subnetMask,
-            nextHop: neighborIface.ipAddress,
-            interface: updated[routerIdx].interfaces.find(
-              i => i.connectedLinkId === link.id
-            )?.name ?? 'unknown',
-            metric: route.metric + 1,
-            type: 'rip',
-          });
-        }
-      }
-    }
-  }
-
-  return updated;
-}
-
-/**
- * Construye la tabla de rutas directamente conectadas para un router.
- * Llama esto cuando cambias una IP de interfaz.
- */
-export function buildConnectedRoutes(router: Device): RouteEntry[] {
-  const connected: RouteEntry[] = [];
-
+export function connectedRoutes(router: Device, topo: TopologyView): RouteEntry[] {
+  if (router.status !== 'up') return [];
+  const out: RouteEntry[] = [];
   for (const iface of router.interfaces) {
-    if (!iface.ipAddress || !iface.subnetMask || iface.status !== 'up') continue;
-
-    // Calcular la red
-    const parts = iface.ipAddress.split('.').map(Number);
-    const maskParts = iface.subnetMask.split('.').map(Number);
-    const networkParts = parts.map((p, i) => p & maskParts[i]);
-
-    connected.push({
-      destination: networkParts.join('.'),
+    if (!hasValidAddress(iface) || !topo.canTransmit(router, iface)) continue;
+    out.push({
+      destination: networkAddress(iface.ipAddress, iface.subnetMask),
       subnetMask: iface.subnetMask,
-      nextHop: 'directly connected',
+      nextHop: '',
       interface: iface.name,
       metric: 0,
       type: 'connected',
     });
   }
+  return out;
+}
 
-  return connected;
+interface RipRoute extends RouteEntry {
+  via: string;  // id del router vecino que la anunció (split horizon)
+}
+
+/**
+ * Recalcula las tablas de todos los routers: conectadas + estáticas del usuario + RIP.
+ * RIP se resuelve como vector-distancia (Bellman-Ford) hasta converger, con
+ * horizonte dividido y métrica máxima 15. Devuelve los equipos actualizados y
+ * los mensajes de log con lo que RIP aprendió o retiró.
+ */
+export function recomputeRouting(devices: Device[], links: Link[]): { devices: Device[]; logs: LogMessage[] } {
+  const topo = new TopologyView(devices, links);
+  const routers = devices.filter(d => d.type === 'router');
+  const connected = new Map<string, RouteEntry[]>();
+  for (const r of routers) connected.set(r.id, connectedRoutes(r, topo));
+
+  // ── Adyacencias RIP: routers RIP en el mismo dominio L2 y la misma subred ──
+  const ripRouters = routers.filter(r => r.ripEnabled && r.status === 'up');
+  const adj = new Map<string, Array<{ ifaceName: string; neighborId: string; nextHop: string }>>();
+  for (const r of ripRouters) {
+    const list: Array<{ ifaceName: string; neighborId: string; nextHop: string }> = [];
+    for (const iface of r.interfaces) {
+      if (!hasValidAddress(iface) || !topo.canTransmit(r, iface)) continue;
+      for (const ep of topo.l2Domain(r, iface)) {
+        if (ep.device.type !== 'router' || !ep.device.ripEnabled || ep.device.id === r.id) continue;
+        if (!hasValidAddress(ep.iface)) continue;
+        if (!ipInNetwork(ep.iface.ipAddress, iface.ipAddress, iface.subnetMask)) continue;
+        list.push({ ifaceName: iface.name, neighborId: ep.device.id, nextHop: ep.iface.ipAddress });
+      }
+    }
+    adj.set(r.id, list);
+  }
+
+  // ── Bellman-Ford ──
+  let tables = new Map<string, Map<string, RipRoute>>();
+  for (const r of ripRouters) {
+    const m = new Map<string, RipRoute>();
+    for (const c of connected.get(r.id)!) m.set(keyOf(c), { ...c, via: '' });
+    tables.set(r.id, m);
+  }
+  for (let round = 0; round < RIP_INFINITY; round++) {
+    let changed = false;
+    const next = new Map<string, Map<string, RipRoute>>();
+    for (const r of ripRouters) {
+      const mine = new Map(tables.get(r.id)!);
+      for (const { ifaceName, neighborId, nextHop } of adj.get(r.id)!) {
+        for (const adv of tables.get(neighborId)!.values()) {
+          if (adv.via === r.id) continue;                      // horizonte dividido
+          const metric = adv.metric + 1;
+          if (metric >= RIP_INFINITY) continue;
+          const k = keyOf(adv);
+          const cur = mine.get(k);
+          if (!cur || (cur.type === 'rip' && metric < cur.metric)) {
+            mine.set(k, {
+              destination: adv.destination, subnetMask: adv.subnetMask,
+              nextHop, interface: ifaceName, metric, type: 'rip', via: neighborId,
+            });
+            changed = true;
+          }
+        }
+      }
+      next.set(r.id, mine);
+    }
+    tables = next;
+    if (!changed) break;
+  }
+
+  // ── Componer tablas finales ──
+  const logs: LogMessage[] = [];
+  const updated = devices.map(d => {
+    if (d.type !== 'router') return d;
+    const conn = connected.get(d.id)!;
+    const statics = (d.routingTable ?? []).filter(r => r.type === 'static');
+    const taken = new Set([...conn, ...statics].map(keyOf));
+    const rip: RouteEntry[] = [];
+    for (const r of tables.get(d.id)?.values() ?? []) {
+      if (r.type !== 'rip' || taken.has(keyOf(r))) continue;
+      const { via: _via, ...route } = r;
+      rip.push(route);
+    }
+    rip.sort((a, b) => keyOf(a).localeCompare(keyOf(b)));
+
+    // Diferencias RIP para el log
+    const before = new Map((d.routingTable ?? []).filter(r => r.type === 'rip').map(r => [keyOf(r), r]));
+    const after = new Map(rip.map(r => [keyOf(r), r]));
+    for (const [k, r] of after) {
+      const old = before.get(k);
+      if (!old) logs.push({ level: 'info', source: d.hostname, key: 'log.ripLearn', params: { net: k, hop: r.nextHop, metric: r.metric } });
+      else if (old.nextHop !== r.nextHop || old.metric !== r.metric)
+        logs.push({ level: 'info', source: d.hostname, key: 'log.ripChange', params: { net: k, hop: r.nextHop, metric: r.metric } });
+    }
+    for (const k of before.keys()) {
+      if (!after.has(k)) logs.push({ level: 'warning', source: d.hostname, key: 'log.ripLost', params: { net: k } });
+    }
+
+    const routingTable = [...conn, ...statics, ...rip];
+    if (JSON.stringify(routingTable) === JSON.stringify(d.routingTable ?? [])) return d;
+    return { ...d, routingTable };
+  });
+
+  return { devices: updated, logs };
 }

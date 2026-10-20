@@ -1,214 +1,104 @@
-# 🌐 Packet Stones — Simulador de Redes Educativo
+<p align="center">
+  <a href="https://www.unfantasmaenelsistema.com"><img src="frontend/public/logo.png" width="96" alt="Un fantasma en el sistema"></a>
+</p>
 
-Simulador de redes informáticas ejecutable en el navegador, similar a Cisco Packet Tracer pero simplificado y moderno. Desarrollado con React + TypeScript + Vite.
+<h1 align="center">Packet Stones</h1>
 
----
+<p align="center">
+  <b>Simulador de redes educativo en el navegador</b><br>
+  Construye una red con routers, switches y PC, lanza un ping y sigue cada paquete: ARP, tablas MAC, enrutamiento, TTL, RIP y DHCP.
+</p>
 
-## 🚀 Instalación y arranque
+<p align="center">
+  <a href="https://unfantasmaenelsistema.github.io/PacketStones/"><b>▶ Abrir la aplicación</b></a> ·
+  <a href="https://www.unfantasmaenelsistema.com">unfantasmaenelsistema.com</a> ·
+  <a href="LICENSE">Licencia MIT</a>
+</p>
 
-```bash
-# 1. Instalar dependencias
-npm install
+![Packet Stones: un ping cruzando dos routers, con el log paso a paso](docs/captura.png)
 
-# 2. Iniciar en modo desarrollo
-npm start
-```
+Funciona entero en el navegador: no hay servidor, no se instala nada y no se envía ningún dato. La topología se guarda solo en tu navegador y se puede descargar o cargar como JSON.
 
-La app estará disponible en **http://localhost:3000**
+## Qué se puede hacer
 
-### Para producción:
+- **Montar la red**: añade routers, switches y PC (clic o arrastrar), conéctalos con la herramienta *Cable* y muévelos por el lienzo. Zoom con la rueda o pellizcando, desplazamiento arrastrando el fondo.
+- **Configurar**: IP y máscara por interfaz (con validación), gateway de los PC, `shutdown` de interfaces, rutas estáticas, RIP y servidor DHCP por interfaz del router.
+- **Simular tráfico**: ping ×1, ×4 o ×10 desde un PC o un router. El paquete se anima cable a cable y el log cuenta lo que hace cada equipo justo cuando le llega.
+- **Provocar fallos**: apaga equipos, baja enlaces, sube la latencia o la pérdida de un cable y observa qué cambia.
+- **Interfaz** en español e inglés, tema oscuro y claro, y diseño adaptado a móvil y tablet.
+
+## Qué simula el motor
+
+| Mecanismo | Comportamiento |
+|---|---|
+| **ARP** | Antes de enviar a una IP de su red, el equipo pregunta por broadcast; el dueño responde y ambos la guardan en su caché ARP. El segundo ping ya no pregunta. |
+| **Switch (L2)** | Aprende la MAC de origen en el puerto de entrada. Si conoce la MAC de destino reenvía solo por ese puerto; si no, inunda. Los broadcast se inundan por todos los puertos menos el de entrada. |
+| **PC** | Si el destino está en su subred envía directo; si no, al gateway (que debe estar en su red). Un PC no reenvía paquetes ajenos. |
+| **Router (L3)** | *Longest prefix match* sobre redes conectadas, rutas estáticas y RIP. Decrementa el TTL en cada salto y descarta con *TTL exceeded* o *destino inalcanzable*. |
+| **Redes conectadas** | Solo aparecen si la interfaz tiene IP válida, no está en `shutdown` y el cable y el otro extremo están activos, como en IOS. |
+| **RIP** | Vector-distancia con horizonte dividido y métrica máxima 15. Reconverge al instante cuando cae un enlace o un router, y el log dice qué rutas cambian. |
+| **DHCP** | Secuencia DORA completa (Discover, Offer, Request, Ack). El router entrega la primera IP libre de su red (desde .100 en redes grandes) y su propia IP como gateway. |
+| **ICMP** | Echo request y echo reply por el camino que decidan las tablas (puede volver por otro), con RTT según la latencia de los cables y estadísticas al final. |
+| **Pérdida** | Cada cable puede perder un porcentaje de tramas; el paquete se ve caer a mitad del cable. |
+
+## Prácticas incluidas
+
+1. **LAN con un switch**: ARP y tabla MAC. El PC4 está en otra subred: ¿por qué no responde?
+2. **Dos redes con rutas estáticas**: gateway, enrutamiento salto a salto y TTL. Prueba a borrar la ruta de vuelta de Router2.
+3. **Tres routers con RIP**: baja el enlace Router1–Router3 y mira cómo el tráfico pasa por Router2 (el TTL baja de 62 a 61).
+4. **DHCP**: los PC no tienen IP; pídela desde el panel del PC.
+
+## Atajos
+
+`V` seleccionar · `C` cable · `X` eliminar · `Supr` borra lo seleccionado · `Esc` cancela · rueda o pellizco = zoom
+
+## Desarrollo
+
+Requiere Node.js 18 o superior.
+
 ```bash
 cd frontend
-npm run build   # genera dist/
-npm run preview # previsualiza el build
+npm install
+npm run dev      # http://localhost:3000
+npm test         # pruebas del motor de red
+npm run build    # genera frontend/dist
 ```
 
----
+Cada cambio en `main` se publica solo en GitHub Pages con [este workflow](.github/workflows/pages.yml), que antes pasa las pruebas del motor.
 
-## 📁 Estructura del proyecto
-
-```
-packet-stones/
-├── package.json                  # Scripts raíz (npm install / npm start)
-├── README.md
-│
-├── frontend/                     # Aplicación React/TypeScript
-│   ├── index.html
-│   ├── vite.config.ts
-│   ├── tsconfig.json
-│   └── src/
-│       ├── main.tsx              # Punto de entrada
-│       ├── App.tsx               # Layout principal
-│       ├── styles.css            # Estilos globales
-│       │
-│       ├── types/
-│       │   └── network.ts        # Tipos TypeScript (Device, Link, Packet...)
-│       │
-│       ├── engine/
-│       │   ├── store.ts          # Estado global (Zustand)
-│       │   ├── NetworkEngine.ts  # Motor de simulación principal
-│       │   └── algorithms/
-│       │       ├── NetworkUtils.ts   # IP, MAC, máscaras
-│       │       └── RoutingEngine.ts  # Longest-prefix match, RIP básico
-│       │
-│       └── components/
-│           ├── canvas/
-│           │   └── NetworkCanvas.tsx  # Canvas HTML5 interactivo
-│           ├── panels/
-│           │   ├── LeftPanel.tsx      # Herramientas y dispositivos
-│           │   ├── RightPanel.tsx     # Config del dispositivo seleccionado
-│           │   └── LogPanel.tsx       # Log de simulación
-│           └── ui/
-│               └── Toolbar.tsx        # Barra superior
-│
-└── shared/                       # Tipos compartidos (futuro backend)
-```
-
----
-
-## 🖥️ Uso de la aplicación
-
-### 1. Crear dispositivos
-- Haz clic en **Router**, **Switch** o **PC** en el panel izquierdo
-- O arrástralos al canvas
-
-### 2. Conectar dispositivos
-- Selecciona la herramienta **🔌 Cable**
-- Haz clic en el dispositivo origen
-- Haz clic en el dispositivo destino
-- Se crea el enlace automáticamente
-
-### 3. Configurar dispositivos
-- Selecciona un dispositivo con la herramienta **🖱️ Seleccionar**
-- En el panel derecho configura:
-  - **Hostname**
-  - **IPs de las interfaces**
-  - **Gateway por defecto** (PCs)
-  - **Tabla de rutas** (Routers)
-
-### 4. Simular tráfico
-- Selecciona un **PC**
-- En el panel derecho, escribe la IP destino y pulsa **▶**
-- Observa el paquete moviéndose por el canvas
-- Revisa el **log inferior** para ver el recorrido hop a hop
-
-### 5. Simular fallos
-- Selecciona un enlace → **⬇️ Bajar enlace**
-- Selecciona un dispositivo → **⬇️ Apagar**
-- Ajusta la **pérdida de paquetes** (%) en la config del enlace
-
-### 6. Guardar/Cargar topología
-- Barra superior → **💾 Guardar** → descarga JSON
-- Barra superior → **📂 Cargar** → abre un JSON guardado
-
----
-
-## 🏗️ Arquitectura del sistema
-
-### Motor de simulación (`NetworkEngine.ts`)
-
-El motor es una clase con sistema de eventos propio. El flujo de un ping:
+### Estructura
 
 ```
-PC1.sendPing("192.168.2.10")
-  → NetworkEngine.ping()
-    → routePacket(PC1, "192.168.2.10")
-      → sendToGateway() → [animación en enlace PC1-Switch]
-        → switchForward() → [animación en enlace Switch-Router]
-          → routerForward() → findBestRoute() → [animación en enlace Router-PC2]
-            → Destino alcanzado ✓
+frontend/src/
+├── engine/
+│   ├── NetworkEngine.ts        # simulación: ARP, switches, routers, ICMP, DHCP
+│   ├── store.ts                # estado (Zustand), reproducción temporal y autoguardado
+│   ├── factory.ts              # equipos, prácticas de ejemplo y validación de JSON
+│   └── algorithms/
+│       ├── NetworkUtils.ts     # IP, máscaras, subredes y MAC
+│       ├── RoutingEngine.ts    # longest prefix match, redes conectadas y RIP
+│       └── Topology.ts         # enlaces utilizables y dominios de capa 2
+├── components/                 # lienzo, paneles, log y barra superior
+├── i18n.ts                     # textos en español e inglés
+└── styles.css                  # temas oscuro y claro
+frontend/scripts/engine.test.ts # pruebas del motor (npm test)
 ```
 
-### Estado global (`store.ts` con Zustand)
+El motor es síncrono: calcula de una vez todo lo que pasa (tramas, tablas y mensajes con su instante) y el store lo reproduce después a la velocidad elegida. Así el resultado es determinista y fácil de probar.
 
-```typescript
-// Acceder al estado
-const { devices, links, packets } = useStore();
+### Limitaciones conocidas
 
-// Acciones
-const { addDevice, addLink, sendPing } = useStore();
-```
-
-### Algoritmo de enrutamiento
-
-Implementado en `RoutingEngine.ts`:
-- **Longest-prefix match**: selecciona la ruta más específica
-- **Rutas directamente conectadas**: se calculan automáticamente al configurar IPs
-- **Rutas estáticas**: añadibles manualmente desde el panel
-- **RIP simplificado** (`propagateRip`): propaga rutas entre routers con metric+1
+- Solo IPv4. Sin VLAN, STP, OSPF ni NAT.
+- Los bucles de switches no generan tormenta de broadcast: el simulador corta la inundación la segunda vez que pasa por el mismo switch.
+- Las cachés ARP y las tablas MAC se vacían al cambiar el cableado o el direccionamiento (no caducan por tiempo).
 
 ---
 
-## 📡 Dispositivos y capacidades
+Proyecto de [Un fantasma en el sistema](https://www.unfantasmaenelsistema.com) · Licencia [MIT](LICENSE)
 
-| Dispositivo | L2 | L3 | DHCP | Ping | Config |
-|------------|----|----|------|------|--------|
-| PC         | ✓  | -  | ✓    | ✓    | IP, GW |
-| Switch     | ✓  | -  | -    | -    | MAC table |
-| Router     | ✓  | ✓  | ✓    | -    | Rutas, interfaces |
+<details>
+<summary><b>English</b></summary>
 
----
+**Packet Stones** is an educational network simulator that runs entirely in the browser ([open it](https://unfantasmaenelsistema.github.io/PacketStones/)). Build a network with routers, switches and PCs, send a ping and follow every packet: ARP, MAC learning, longest-prefix routing with TTL, static routes, RIP with instant reconvergence, DHCP (DORA) and per-cable latency and loss. It ships with four guided labs, a step-by-step log, Spanish and English UI, dark and light themes, and works on phones and tablets. Nothing is sent anywhere: your topology stays in your browser and can be exported as JSON. MIT licensed.
 
-## 🎨 Topología de ejemplo
-
-Al pulsar **"Cargar ejemplo"** se crea:
-
-```
-PC1 (192.168.1.10/24, gw: .1.1)
-    |
-  Switch1
-    |
-  Router1 (Gi0/0: 192.168.1.1, Gi0/1: 192.168.2.1)
-    |
-  ┌─┴─────────┐
-PC2           PC3
-(192.168.2.10) (192.168.2.20)
-```
-
----
-
-## ⚠️ Decisiones de diseño y limitaciones conocidas
-
-1. **Sin backend**: toda la simulación es client-side. No hay persistencia de servidor. Se optó por esto para facilitar el despliegue (GitHub Pages, etc.).
-
-2. **ARP simplificado**: el simulador omite el proceso ARP completo. Los paquetes se enrutan directamente. En una versión v2 se podría añadir una fase ARP antes del forwarding.
-
-3. **Switch simplificado**: el switch hace flood en todos los puertos (broadcast). No implementa VLAN ni STP.
-
-4. **RIP experimental**: `propagateRip()` está implementado pero no se llama automáticamente en el bucle de simulación. Se puede invocar manualmente desde el motor.
-
-5. **IPv4 únicamente**: no hay soporte para IPv6.
-
-6. **Un enlace por par**: no se permiten enlaces redundantes entre los mismos dos dispositivos (de momento).
-
----
-
-## 🔧 Posibles mejoras (v2)
-
-- [ ] Protocolo ARP completo con animación
-- [ ] VLAN en switches
-- [ ] Spanning Tree Protocol (STP)
-- [ ] OSPF simplificado
-- [ ] Modo paso a paso (step-by-step)
-- [ ] Exportar topología como imagen PNG
-- [ ] Backend Node.js + WebSockets para simulación multiusuario
-- [ ] Subredes automáticas y VLSM
-- [ ] IPv6
-- [ ] Importar topologías GNS3
-
----
-
-## 📚 Conceptos que enseña
-
-- **Redes LAN**: topologías estrella, bus, árbol
-- **Switching L2**: forwarding, broadcast, tabla MAC
-- **Routing L3**: tabla de rutas, next-hop, longest-prefix match
-- **ICMP**: ping, echo request/reply, TTL
-- **Diagnóstico**: fallos de enlace, pérdida de paquetes, congestión
-- **Subnetting**: máscaras, redes, gateways
-
----
-
-## 📄 Licencia
-
-MIT — libre para uso educativo y personal.
+</details>

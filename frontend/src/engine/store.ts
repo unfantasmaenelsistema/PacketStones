@@ -5,390 +5,425 @@
 import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
 import {
-  Device, Link, PacketAnimation, LogEntry,
-  SimulatorState, Tool, DeviceType, Topology, RouteEntry,
+  Device, DeviceType, Link, LogEntry, LogMessage, LogParams, NetworkInterface,
+  PacketAnimation, Position, RouteEntry, Tool, Topology,
 } from '@/types/network';
-import { generateMac, generateDefaultIp } from './algorithms/NetworkUtils';
-import { buildConnectedRoutes } from './algorithms/RoutingEngine';
-import { networkEngine } from './NetworkEngine';
+import { recomputeRouting } from './algorithms/RoutingEngine';
+import { SimResult, simulateDhcp, simulatePing } from './NetworkEngine';
+import { buildExample, connect, createDevice, ExampleId, sanitizeTopology } from './factory';
+import { Lang } from '@/i18n';
 
-// ── Defaults por tipo de dispositivo ──────────────────────
-const DEFAULT_INTERFACES = {
-  router: ['GigabitEthernet0/0', 'GigabitEthernet0/1', 'GigabitEthernet0/2'],
-  switch: ['FastEthernet0/1', 'FastEthernet0/2', 'FastEthernet0/3', 'FastEthernet0/4',
-           'FastEthernet0/5', 'FastEthernet0/6', 'FastEthernet0/7', 'FastEthernet0/8'],
-  pc:     ['eth0'],
-};
+export type Theme = 'dark' | 'light';
 
-let deviceCounter = 0;
-
-function createDevice(type: DeviceType, position: { x: number; y: number }): Device {
-  deviceCounter++;
-  const idx = deviceCounter;
-  const hostname = `${type === 'router' ? 'Router' : type === 'switch' ? 'Switch' : 'PC'}${idx}`;
-  const ifaceNames = DEFAULT_INTERFACES[type];
-
-  const interfaces = ifaceNames.map((name, i) => ({
-    id: uuidv4(),
-    name,
-    ipAddress: type === 'pc' ? generateDefaultIp(idx) : '',
-    subnetMask: '255.255.255.0',
-    status: 'up' as const,
-    macAddress: generateMac(),
-    connectedLinkId: undefined,
-  }));
-
-  const device: Device = {
-    id: uuidv4(),
-    type,
-    hostname,
-    position,
-    status: 'up',
-    interfaces,
-    ...(type === 'router' && {
-      routingTable: [],
-    }),
-    ...(type === 'switch' && {
-      macTable: [],
-    }),
-    ...(type === 'pc' && {
-      defaultGateway: '',
-    }),
-  };
-
-  return device;
+export interface Toast {
+  id: number;
+  key: string;
+  params?: LogParams;
+  level: 'info' | 'error' | 'success';
 }
 
-// ── Estado inicial ─────────────────────────────────────────
-interface StoreState extends SimulatorState {
-  // Acciones de topología
-  addDevice:       (type: DeviceType, position: { x: number; y: number }) => void;
-  removeDevice:    (id: string) => void;
-  updateDevice:    (id: string, updates: Partial<Device>) => void;
-  moveDevice:      (id: string, position: { x: number; y: number }) => void;
-  addLink:         (sourceId: string, targetId: string) => void;
-  removeLink:      (id: string) => void;
-  toggleLinkStatus:(id: string) => void;
-  toggleDeviceStatus:(id: string) => void;
+interface QueuedLog {
+  due: number;
+  msg: LogMessage;
+}
 
-  // Selección
-  selectDevice:    (id: string | null) => void;
-  selectLink:      (id: string | null) => void;
-  setTool:         (tool: Tool) => void;
-  setCableSource:  (id: string | null) => void;
-
-  // Simulación
-  sendPing:        (sourceId: string, destIp: string) => void;
-  updateAnimations:(time: number) => void;
-  clearAnimations: () => void;
-
-  // Rutas
-  addRoute:        (deviceId: string, route: RouteEntry) => void;
-  removeRoute:     (deviceId: string, routeIdx: number) => void;
-
-  // Log
-  addLog:          (entry: LogEntry) => void;
-  clearLogs:       () => void;
+interface StoreState {
+  devices: Device[];
+  links: Link[];
+  anims: PacketAnimation[];
+  queue: QueuedLog[];
+  logs: LogEntry[];
+  selectedDeviceId: string | null;
+  selectedLinkId: string | null;
+  activeTool: Tool;
+  cableSource: string | null;
+  speed: number;
+  lang: Lang;
+  theme: Theme;
+  fitNonce: number;
+  toast: Toast | null;
+  drawer: 'left' | 'right' | null;   // paneles en pantallas estrechas
 
   // Topología
-  saveTopology:    (name: string) => string;
-  loadTopology:    (json: string) => void;
-  loadExample:     () => void;
-  clearAll:        () => void;
+  addDevice: (type: DeviceType, position: Position) => void;
+  removeDevice: (id: string) => void;
+  renameDevice: (id: string, hostname: string) => void;
+  moveDevice: (id: string, position: Position) => void;
+  toggleDevice: (id: string) => void;
+  setInterface: (deviceId: string, ifaceId: string, patch: Partial<NetworkInterface>) => void;
+  setGateway: (deviceId: string, gw: string) => void;
+  setRip: (deviceId: string, on: boolean) => void;
+  addStaticRoute: (deviceId: string, route: RouteEntry) => void;
+  removeStaticRoute: (deviceId: string, route: RouteEntry) => void;
+  addLink: (sourceId: string, targetId: string) => boolean;
+  removeLink: (id: string) => void;
+  toggleLink: (id: string) => void;
+  updateLink: (id: string, patch: Partial<Pick<Link, 'latency' | 'packetLoss'>>) => void;
+
+  // Selección y herramientas
+  selectDevice: (id: string | null) => void;
+  selectLink: (id: string | null) => void;
+  setTool: (tool: Tool) => void;
+  setCableSource: (id: string | null) => void;
+  deleteSelection: () => void;
+
+  // Simulación
+  ping: (sourceId: string, destIp: string, count: number) => void;
+  dhcp: (pcId: string) => void;
+  tick: (now: number) => void;
+  clearAnimations: () => void;
+  setSpeed: (s: number) => void;
+
+  // Log y avisos
+  clearLogs: () => void;
+  showToast: (key: string, level?: Toast['level'], params?: LogParams) => void;
+
+  // Archivo
+  exportTopology: (name: string) => string;
+  importTopology: (json: string) => boolean;
+  loadExample: (id: ExampleId) => void;
+  clearAll: () => void;
+
+  // Preferencias y vista
+  setLang: (l: Lang) => void;
+  setTheme: (t: Theme) => void;
+  requestFit: () => void;
+  setDrawer: (d: StoreState['drawer']) => void;
+}
+
+// ── localStorage protegido (modo privado, almacenamiento bloqueado…) ──
+const LS = {
+  get(k: string): string | null {
+    try { return localStorage.getItem(k); } catch { return null; }
+  },
+  set(k: string, v: string) {
+    try { localStorage.setItem(k, v); } catch { /* sin almacenamiento */ }
+  },
+};
+
+let logSeq = 0;
+let toastSeq = 0;
+const mkLog = (m: LogMessage): LogEntry => ({ ...m, id: `l${++logSeq}`, timestamp: Date.now() });
+
+/** Vacía cachés ARP y tablas MAC (tras un cambio de cableado o direccionamiento). */
+function flushTables(devices: Device[]): { devices: Device[]; flushed: boolean } {
+  let flushed = false;
+  const out = devices.map(d => {
+    if (d.arpTable?.length || d.macTable?.length) {
+      flushed = true;
+      return { ...d, ...(d.arpTable && { arpTable: [] }), ...(d.macTable && { macTable: [] }) };
+    }
+    return d;
+  });
+  return { devices: out, flushed };
+}
+
+function initialTopology(): { devices: Device[]; links: Link[] } {
+  const saved = LS.get('ps_topology');
+  if (saved) {
+    try {
+      const t = sanitizeTopology(JSON.parse(saved));
+      return { devices: recomputeRouting(t.devices, t.links).devices, links: t.links };
+    } catch { /* guardado corrupto: se ignora */ }
+  }
+  const ex = buildExample('static');
+  return { devices: recomputeRouting(ex.devices, ex.links).devices, links: ex.links };
+}
+
+function initialLang(): Lang {
+  const s = LS.get('ps_lang');
+  if (s === 'es' || s === 'en') return s;
+  return typeof navigator !== 'undefined' && /^es\b/i.test(navigator.language) ? 'es' : 'en';
+}
+
+function initialTheme(): Theme {
+  const s = LS.get('ps_theme');
+  if (s === 'dark' || s === 'light') return s;
+  return 'dark';
 }
 
 export const useStore = create<StoreState>((set, get) => {
-  // Escuchar eventos del motor → agregar logs al store
-  networkEngine.on(event => {
-    if (event.type === 'log') {
-      set(s => ({ logs: [event.entry, ...s.logs].slice(0, 200) }));
+  /**
+   * Aplica un cambio de topología: recalcula rutas (conectadas, estáticas y RIP)
+   * y, si el cambio afecta al cableado o a las direcciones, vacía ARP/MAC.
+   */
+  const commit = (devices: Device[], links: Link[], opts: { flush?: boolean; extra?: Partial<StoreState>; logs?: LogMessage[] } = {}) => {
+    let devs = devices;
+    const newLogs: LogMessage[] = [...(opts.logs ?? [])];
+    if (opts.flush) {
+      const f = flushTables(devs);
+      devs = f.devices;
+      if (f.flushed) newLogs.push({ level: 'info', source: 'Packet Stones', key: 'log.cleared' });
     }
-  });
+    const r = recomputeRouting(devs, links);
+    newLogs.push(...r.logs);
+    set(s => ({
+      devices: r.devices,
+      links,
+      ...(newLogs.length && { logs: [...s.logs, ...newLogs.map(mkLog)].slice(-600) }),
+      ...opts.extra,
+    }));
+  };
+
+  const mapDevice = (id: string, fn: (d: Device) => Device) => get().devices.map(d => (d.id === id ? fn(d) : d));
+
+  /** Programa en el tiempo las animaciones y mensajes que devuelve el motor. */
+  const play = (res: SimResult) => {
+    const now = performance.now();
+    const k = 1 / get().speed;
+    const anims: PacketAnimation[] = res.anims.map(a => ({
+      id: uuidv4(), kind: a.kind, linkId: a.linkId, fromDeviceId: a.from, toDeviceId: a.to,
+      startTime: now + a.start * k, duration: a.duration * k, dropAt: a.dropAt,
+    }));
+    const queue: QueuedLog[] = res.logs.map(l => ({ due: now + l.at * k, msg: l.msg }));
+    set(s => ({
+      devices: res.devices,
+      anims: [...s.anims, ...anims],
+      queue: [...s.queue, ...queue].sort((a, b) => a.due - b.due),
+    }));
+    get().tick(now);
+  };
+
+  const topo = initialTopology();
 
   return {
-    // ── Estado inicial ────────────────────────────────────
-    devices: [],
-    links: [],
-    packets: [],
+    devices: topo.devices,
+    links: topo.links,
+    anims: [],
+    queue: [],
     logs: [],
     selectedDeviceId: null,
     selectedLinkId: null,
     activeTool: 'select',
     cableSource: null,
-    isSimulating: false,
-    stepMode: false,
+    speed: 1,
+    lang: initialLang(),
+    theme: initialTheme(),
+    fitNonce: 1,
+    toast: null,
+    drawer: null,
 
     // ── Dispositivos ──────────────────────────────────────
     addDevice: (type, position) => {
-      const device = createDevice(type, position);
-      set(s => ({ devices: [...s.devices, device] }));
+      const d = createDevice(type, position, get().devices);
+      commit([...get().devices, d], get().links, { extra: { selectedDeviceId: d.id, selectedLinkId: null } });
     },
 
     removeDevice: (id) => {
-      set(s => ({
-        devices: s.devices.filter(d => d.id !== id),
-        links: s.links.filter(l => l.sourceDeviceId !== id && l.targetDeviceId !== id),
-        selectedDeviceId: s.selectedDeviceId === id ? null : s.selectedDeviceId,
-      }));
-    },
-
-    updateDevice: (id, updates) => {
-      set(s => {
-        const updated = s.devices.map(d => {
-          if (d.id !== id) return d;
-          const merged = { ...d, ...updates };
-          // Recalcular rutas conectadas si es router y cambiaron interfaces
-          if (merged.type === 'router' && updates.interfaces) {
-            const connected = buildConnectedRoutes(merged);
-            const nonConnected = (merged.routingTable ?? []).filter(r => r.type !== 'connected');
-            merged.routingTable = [...connected, ...nonConnected];
-          }
-          return merged;
-        });
-        return { devices: updated };
+      const { devices, links } = get();
+      const gone = new Set(links.filter(l => l.sourceDeviceId === id || l.targetDeviceId === id).map(l => l.id));
+      const rest = devices
+        .filter(d => d.id !== id)
+        .map(d => (d.interfaces.some(i => i.connectedLinkId && gone.has(i.connectedLinkId))
+          ? { ...d, interfaces: d.interfaces.map(i => (i.connectedLinkId && gone.has(i.connectedLinkId) ? { ...i, connectedLinkId: undefined } : i)) }
+          : d));
+      const s = get();
+      commit(rest, links.filter(l => !gone.has(l.id)), {
+        flush: true,
+        extra: {
+          selectedDeviceId: s.selectedDeviceId === id ? null : s.selectedDeviceId,
+          selectedLinkId: s.selectedLinkId && gone.has(s.selectedLinkId) ? null : s.selectedLinkId,
+          cableSource: s.cableSource === id ? null : s.cableSource,
+          anims: s.anims.filter(a => !gone.has(a.linkId)),
+        },
       });
     },
 
-    moveDevice: (id, position) => {
-      set(s => ({
-        devices: s.devices.map(d => d.id === id ? { ...d, position } : d),
-      }));
+    renameDevice: (id, hostname) => {
+      const name = hostname.trim().slice(0, 32);
+      if (!name) return;
+      set({ devices: mapDevice(id, d => ({ ...d, hostname: name })) });
     },
 
-    // ── Links ─────────────────────────────────────────────
+    moveDevice: (id, position) => set({ devices: mapDevice(id, d => ({ ...d, position })) }),
+
+    toggleDevice: (id) => {
+      const dev = get().devices.find(d => d.id === id);
+      if (!dev) return;
+      const status = dev.status === 'up' ? 'down' : 'up';
+      commit(mapDevice(id, d => ({ ...d, status })), get().links, {
+        flush: true,
+        logs: [{ level: status === 'up' ? 'success' : 'warning', source: dev.hostname, key: status === 'up' ? 'log.powerOn' : 'log.powerOff' }],
+      });
+    },
+
+    setInterface: (deviceId, ifaceId, patch) => {
+      commit(mapDevice(deviceId, d => ({
+        ...d, interfaces: d.interfaces.map(i => (i.id === ifaceId ? { ...i, ...patch } : i)),
+      })), get().links, { flush: !('dhcpServer' in patch && Object.keys(patch).length === 1) });
+    },
+
+    setGateway: (deviceId, gw) => {
+      commit(mapDevice(deviceId, d => ({ ...d, defaultGateway: gw })), get().links, { flush: true });
+    },
+
+    setRip: (deviceId, on) => commit(mapDevice(deviceId, d => ({ ...d, ripEnabled: on })), get().links),
+
+    addStaticRoute: (deviceId, route) => commit(
+      mapDevice(deviceId, d => ({ ...d, routingTable: [...(d.routingTable ?? []), route] })), get().links,
+    ),
+
+    removeStaticRoute: (deviceId, route) => commit(
+      mapDevice(deviceId, d => ({ ...d, routingTable: (d.routingTable ?? []).filter(r => r !== route) })), get().links,
+    ),
+
+    // ── Cables ────────────────────────────────────────────
     addLink: (sourceId, targetId) => {
       const { devices, links } = get();
-      const source = devices.find(d => d.id === sourceId);
-      const target = devices.find(d => d.id === targetId);
-      if (!source || !target) return;
-      if (sourceId === targetId) return;
-
-      // Evitar duplicados
-      const exists = links.some(
-        l => (l.sourceDeviceId === sourceId && l.targetDeviceId === targetId) ||
-             (l.sourceDeviceId === targetId && l.targetDeviceId === sourceId)
-      );
-      if (exists) return;
-
-      // Buscar interfaz libre en cada dispositivo
-      const srcIface = source.interfaces.find(
-        i => !i.connectedLinkId
-      );
-      const tgtIface = target.interfaces.find(
-        i => !i.connectedLinkId
-      );
-      if (!srcIface || !tgtIface) {
-        console.warn('No hay interfaces libres en uno de los dispositivos');
-        return;
+      if (sourceId === targetId) return false;
+      if (links.some(l => (l.sourceDeviceId === sourceId && l.targetDeviceId === targetId)
+        || (l.sourceDeviceId === targetId && l.targetDeviceId === sourceId))) {
+        get().showToast('cable.exists', 'error');
+        return false;
       }
-
-      const linkId = uuidv4();
-      const link: Link = {
-        id: linkId,
-        sourceDeviceId: sourceId,
-        sourceInterfaceId: srcIface.id,
-        targetDeviceId: targetId,
-        targetInterfaceId: tgtIface.id,
-        status: 'up',
-        latency: 1,
-        packetLoss: 0,
-        bandwidth: 100,
-      };
-
-      // Actualizar interfaces con el linkId
-      const updatedDevices = devices.map(d => {
-        if (d.id === sourceId) {
-          return {
-            ...d,
-            interfaces: d.interfaces.map(i =>
-              i.id === srcIface.id ? { ...i, connectedLinkId: linkId } : i
-            ),
-          };
+      for (const id of [sourceId, targetId]) {
+        const d = devices.find(x => x.id === id);
+        if (d && !d.interfaces.some(i => !i.connectedLinkId)) {
+          get().showToast('cable.noPorts', 'error', { host: d.hostname });
+          return false;
         }
-        if (d.id === targetId) {
-          return {
-            ...d,
-            interfaces: d.interfaces.map(i =>
-              i.id === tgtIface.id ? { ...i, connectedLinkId: linkId } : i
-            ),
-          };
-        }
-        return d;
-      });
-
-      set({ devices: updatedDevices, links: [...links, link] });
+      }
+      const r = connect(devices, sourceId, targetId);
+      if (!r) return false;
+      commit(r.devices, [...links, r.link], { flush: true });
+      return true;
     },
 
     removeLink: (id) => {
       const { devices, links } = get();
-      const link = links.find(l => l.id === id);
-      if (!link) return;
-
-      // Liberar interfaces
-      const updatedDevices = devices.map(d => ({
-        ...d,
-        interfaces: d.interfaces.map(i =>
-          i.connectedLinkId === id ? { ...i, connectedLinkId: undefined } : i
-        ),
-      }));
-
-      set({
-        devices: updatedDevices,
-        links: links.filter(l => l.id !== id),
-        selectedLinkId: null,
+      const updated = devices.map(d => (d.interfaces.some(i => i.connectedLinkId === id)
+        ? { ...d, interfaces: d.interfaces.map(i => (i.connectedLinkId === id ? { ...i, connectedLinkId: undefined } : i)) }
+        : d));
+      commit(updated, links.filter(l => l.id !== id), {
+        flush: true,
+        extra: {
+          selectedLinkId: get().selectedLinkId === id ? null : get().selectedLinkId,
+          anims: get().anims.filter(a => a.linkId !== id),
+        },
       });
     },
 
-    toggleLinkStatus: (id) => {
-      const { links } = get();
-      const updated = networkEngine.toggleLink(links.find(l => l.id === id)!, links);
-      set({ links: updated });
+    toggleLink: (id) => {
+      const { devices, links } = get();
+      const link = links.find(l => l.id === id);
+      if (!link) return;
+      const status = link.status === 'up' ? 'down' : 'up';
+      const name = (did: string) => devices.find(d => d.id === did)?.hostname ?? '?';
+      commit(devices, links.map(l => (l.id === id ? { ...l, status } : l)), {
+        flush: true,
+        logs: [{
+          level: status === 'up' ? 'success' : 'warning', source: 'Packet Stones',
+          key: status === 'up' ? 'log.linkUp' : 'log.linkDownEv',
+          params: { a: name(link.sourceDeviceId), b: name(link.targetDeviceId) },
+        }],
+      });
     },
 
-    toggleDeviceStatus: (id) => {
-      const { devices } = get();
-      const updated = networkEngine.toggleDevice(devices.find(d => d.id === id)!, devices);
-      set({ devices: updated });
-    },
+    updateLink: (id, patch) => set(s => ({ links: s.links.map(l => (l.id === id ? { ...l, ...patch } : l)) })),
 
     // ── Selección ─────────────────────────────────────────
     selectDevice: (id) => set({ selectedDeviceId: id, selectedLinkId: null }),
-    selectLink:   (id) => set({ selectedLinkId: id, selectedDeviceId: null }),
-    setTool:      (tool) => set({ activeTool: tool, cableSource: null }),
-    setCableSource:(id) => set({ cableSource: id }),
+    selectLink: (id) => set({ selectedLinkId: id, selectedDeviceId: null }),
+    setTool: (tool) => set({ activeTool: tool, cableSource: null }),
+    setCableSource: (id) => set({ cableSource: id }),
+    deleteSelection: () => {
+      const { selectedDeviceId, selectedLinkId } = get();
+      if (selectedDeviceId) get().removeDevice(selectedDeviceId);
+      else if (selectedLinkId) get().removeLink(selectedLinkId);
+    },
 
     // ── Simulación ────────────────────────────────────────
-    sendPing: (sourceId, destIp) => {
+    ping: (sourceId, destIp, count) => {
       const { devices, links } = get();
-      const animations = networkEngine.ping(sourceId, destIp, devices, links);
-      if (animations.length > 0) {
-        set(s => ({ packets: [...s.packets, ...animations] }));
-      }
+      play(simulatePing(devices, links, sourceId, destIp.trim(), count));
     },
 
-    updateAnimations: (now) => {
-      set(s => {
-        const updated = s.packets
-          .map(p => ({
-            ...p,
-            progress: Math.min(1, (now - p.startTime) / p.duration),
-          }))
-          .filter(p => p.progress < 1);
-        return { packets: updated };
-      });
+    dhcp: (pcId) => {
+      const { devices, links } = get();
+      play(simulateDhcp(devices, links, pcId));
     },
 
-    clearAnimations: () => set({ packets: [] }),
-
-    // ── Rutas ─────────────────────────────────────────────
-    addRoute: (deviceId, route) => {
+    tick: (now) => {
+      const { queue, anims } = get();
+      let i = 0;
+      while (i < queue.length && queue[i].due <= now) i++;
+      const finished = anims.some(a => now >= a.startTime + a.duration);
+      if (!i && !finished) return;
       set(s => ({
-        devices: s.devices.map(d =>
-          d.id === deviceId
-            ? { ...d, routingTable: [...(d.routingTable ?? []), route] }
-            : d
-        ),
+        ...(i && { queue: s.queue.slice(i), logs: [...s.logs, ...s.queue.slice(0, i).map(q => mkLog(q.msg))].slice(-600) }),
+        ...(finished && { anims: s.anims.filter(a => now < a.startTime + a.duration) }),
       }));
     },
 
-    removeRoute: (deviceId, routeIdx) => {
-      set(s => ({
-        devices: s.devices.map(d =>
-          d.id === deviceId
-            ? { ...d, routingTable: (d.routingTable ?? []).filter((_, i) => i !== routeIdx) }
-            : d
-        ),
-      }));
+    clearAnimations: () => {
+      // Lo pendiente del log se muestra ya, para no perder el resultado
+      set(s => ({ anims: [], queue: [], logs: [...s.logs, ...s.queue.map(q => mkLog(q.msg))].slice(-600) }));
     },
 
-    // ── Log ───────────────────────────────────────────────
-    addLog: (entry) => set(s => ({ logs: [entry, ...s.logs].slice(0, 200) })),
+    setSpeed: (speed) => set({ speed }),
+
+    // ── Log y avisos ──────────────────────────────────────
     clearLogs: () => set({ logs: [] }),
+    showToast: (key, level = 'info', params) => set({ toast: { id: ++toastSeq, key, level, params } }),
 
-    // ── Topología ─────────────────────────────────────────
-    saveTopology: (name) => {
+    // ── Archivo ───────────────────────────────────────────
+    exportTopology: (name) => {
       const { devices, links } = get();
-      const topology: Topology = {
-        version: '1.0',
-        name,
-        createdAt: new Date().toISOString(),
-        devices,
-        links,
-      };
+      const clean = devices.map(d => ({
+        ...d,
+        ...(d.arpTable && { arpTable: [] }),
+        ...(d.macTable && { macTable: [] }),
+        ...(d.routingTable && { routingTable: d.routingTable.filter(r => r.type === 'static') }),
+      }));
+      const topology: Topology = { version: '2.0', name, createdAt: new Date().toISOString(), devices: clean, links };
       return JSON.stringify(topology, null, 2);
     },
 
-    loadTopology: (json) => {
+    importTopology: (json) => {
       try {
-        const topology: Topology = JSON.parse(json);
-        set({
-          devices: topology.devices,
-          links: topology.links,
-          packets: [],
-          logs: [],
-          selectedDeviceId: null,
-          selectedLinkId: null,
+        const t = sanitizeTopology(JSON.parse(json));
+        commit(t.devices, t.links, {
+          extra: { anims: [], queue: [], logs: [], selectedDeviceId: null, selectedLinkId: null, cableSource: null, fitNonce: get().fitNonce + 1 },
         });
-      } catch (e) {
-        console.error('Error loading topology:', e);
+        get().showToast('load.ok', 'success', { name: t.name });
+        return true;
+      } catch {
+        get().showToast('load.error', 'error');
+        return false;
       }
     },
 
-    loadExample: () => {
-      // Topología de ejemplo: PC1 --- Switch --- Router --- PC2
-      const sw = createDevice('switch', { x: 400, y: 300 });
-      const router = createDevice('router', { x: 650, y: 300 });
-      const pc1 = createDevice('pc', { x: 150, y: 300 });
-      const pc2 = createDevice('pc', { x: 900, y: 180 });
-      const pc3 = createDevice('pc', { x: 900, y: 420 });
-
-      // Configurar IPs
-      pc1.interfaces[0].ipAddress = '192.168.1.10';
-      pc1.defaultGateway = '192.168.1.1';
-
-      pc2.interfaces[0].ipAddress = '192.168.2.10';
-      pc2.defaultGateway = '192.168.2.1';
-
-      pc3.interfaces[0].ipAddress = '192.168.2.20';
-      pc3.defaultGateway = '192.168.2.1';
-
-      router.interfaces[0].ipAddress = '192.168.1.1';
-      router.interfaces[1].ipAddress = '192.168.2.1';
-
-      router.routingTable = [
-        ...buildConnectedRoutes(router),
-      ];
-
-      deviceCounter = 5;
-      set({
-        devices: [pc1, sw, router, pc2, pc3],
-        links: [],
-        packets: [],
-        logs: [],
-        selectedDeviceId: null,
-        selectedLinkId: null,
-      });
-
-      // Conectar con addLink
-      const store = get();
-      store.addLink(pc1.id, sw.id);
-      store.addLink(sw.id, router.id);
-      store.addLink(router.id, pc2.id);
-      store.addLink(router.id, pc3.id);
-    },
-
-    clearAll: () => {
-      deviceCounter = 0;
-      set({
-        devices: [],
-        links: [],
-        packets: [],
-        logs: [],
-        selectedDeviceId: null,
-        selectedLinkId: null,
-        cableSource: null,
-        activeTool: 'select',
+    loadExample: (id) => {
+      const ex = buildExample(id);
+      commit(ex.devices, ex.links, {
+        extra: {
+          anims: [], queue: [], logs: [], selectedDeviceId: null, selectedLinkId: null,
+          cableSource: null, activeTool: 'select', fitNonce: get().fitNonce + 1, drawer: null,
+        },
       });
     },
+
+    clearAll: () => set({
+      devices: [], links: [], anims: [], queue: [], logs: [],
+      selectedDeviceId: null, selectedLinkId: null, cableSource: null, activeTool: 'select',
+    }),
+
+    // ── Preferencias y vista ──────────────────────────────
+    setLang: (lang) => { LS.set('ps_lang', lang); set({ lang }); },
+    setTheme: (theme) => {
+      LS.set('ps_theme', theme);
+      document.documentElement.dataset.theme = theme;  // antes de que el lienzo relea los colores
+      set({ theme });
+    },
+    requestFit: () => set(s => ({ fitNonce: s.fitNonce + 1 })),
+    setDrawer: (drawer) => set({ drawer }),
   };
+});
+
+// ── Guardado automático de la topología en este navegador ──
+let saveTimer: ReturnType<typeof setTimeout> | undefined;
+useStore.subscribe((s, prev) => {
+  if (s.devices === prev.devices && s.links === prev.links) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => LS.set('ps_topology', useStore.getState().exportTopology('autosave')), 400);
 });

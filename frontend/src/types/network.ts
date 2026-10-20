@@ -3,12 +3,18 @@
 // ============================================================
 
 export type DeviceType = 'router' | 'switch' | 'pc';
-export type DeviceStatus = 'up' | 'down';
-export type LinkStatus = 'up' | 'down';
-export type PacketType = 'icmp_request' | 'icmp_reply' | 'arp_request' | 'arp_reply' | 'dhcp' | 'data';
+export type Status = 'up' | 'down';
 export type Tool = 'select' | 'cable' | 'delete';
 
-// ── Posición en el canvas ──────────────────────────────────
+/** Tipo de tráfico que viaja por un enlace (decide el color en el lienzo). */
+export type PacketKind =
+  | 'icmp_request'
+  | 'icmp_reply'
+  | 'arp_request'
+  | 'arp_reply'
+  | 'dhcp';
+
+// ── Posición en el lienzo ──────────────────────────────────
 export interface Position {
   x: number;
   y: number;
@@ -17,116 +23,100 @@ export interface Position {
 // ── Interfaz de red de un dispositivo ─────────────────────
 export interface NetworkInterface {
   id: string;
-  name: string;          // e.g. "eth0", "GigabitEthernet0/0"
-  ipAddress: string;     // e.g. "192.168.1.1"
-  subnetMask: string;    // e.g. "255.255.255.0"
-  status: LinkStatus;
+  name: string;          // "eth0", "GigabitEthernet0/0", "FastEthernet0/1"
+  ipAddress: string;     // vacío en los puertos de switch
+  subnetMask: string;
+  status: Status;        // 'down' = shutdown administrativo
   macAddress: string;
   connectedLinkId?: string;
+  dhcpServer?: boolean;  // Router: sirve direcciones por DHCP en esta interfaz
 }
 
 // ── Entrada en la tabla de rutas ──────────────────────────
 export interface RouteEntry {
-  destination: string;   // e.g. "192.168.2.0"
-  subnetMask: string;    // e.g. "255.255.255.0"
-  nextHop: string;       // e.g. "192.168.1.1" o "directly connected"
-  interface: string;     // nombre de interfaz
+  destination: string;   // dirección de red, p. ej. "192.168.2.0"
+  subnetMask: string;
+  nextHop: string;       // IP del siguiente salto o "" si es directamente conectada
+  interface: string;     // nombre de la interfaz de salida ("" = automática)
   metric: number;
-  type: 'static' | 'connected' | 'rip';
+  type: 'connected' | 'static' | 'rip';
 }
 
-// ── Entrada en la tabla MAC de un switch ─────────────────
+// ── Tabla MAC de un switch ────────────────────────────────
 export interface MacEntry {
   macAddress: string;
-  port: string;          // nombre de interfaz
-  timestamp: number;     // para expiración TTL
+  port: string;          // nombre del puerto
 }
 
-// ── Dispositivo genérico ───────────────────────────────────
+// ── Caché ARP de un PC o router ───────────────────────────
+export interface ArpEntry {
+  ip: string;
+  mac: string;
+  interface: string;
+}
+
+// ── Dispositivo ────────────────────────────────────────────
 export interface Device {
   id: string;
   type: DeviceType;
   hostname: string;
   position: Position;
-  status: DeviceStatus;
+  status: Status;
   interfaces: NetworkInterface[];
-  // Config específica por tipo
-  routingTable?: RouteEntry[];    // Router
-  macTable?: MacEntry[];          // Switch
-  defaultGateway?: string;        // PC
-  dnsServer?: string;             // PC (DHCP opcional)
+  routingTable?: RouteEntry[];   // Router (connected + static + rip)
+  ripEnabled?: boolean;          // Router
+  macTable?: MacEntry[];         // Switch
+  arpTable?: ArpEntry[];         // PC y router
+  defaultGateway?: string;       // PC
 }
 
-// ── Enlace entre dos dispositivos ─────────────────────────
+// ── Enlace entre dos interfaces ───────────────────────────
 export interface Link {
   id: string;
   sourceDeviceId: string;
   sourceInterfaceId: string;
   targetDeviceId: string;
   targetInterfaceId: string;
-  status: LinkStatus;
-  latency: number;        // ms
+  status: Status;
+  latency: number;        // ms en un sentido
   packetLoss: number;     // 0-100 %
-  bandwidth: number;      // Mbps
+  bandwidth: number;      // Mbps (informativo)
 }
 
-// ── Paquete en tránsito ────────────────────────────────────
-export interface Packet {
-  id: string;
-  type: PacketType;
-  sourceIp: string;
-  destinationIp: string;
-  sourceMac: string;
-  destinationMac: string;
-  ttl: number;
-  payload?: string;
-  // Para ICMP
-  icmpSequence?: number;
-  icmpCode?: number;
-}
-
-// ── Animación de un paquete moviéndose por un enlace ──────
+// ── Paquete animado sobre un enlace ───────────────────────
 export interface PacketAnimation {
   id: string;
-  packet: Packet;
+  kind: PacketKind;
   linkId: string;
   fromDeviceId: string;
   toDeviceId: string;
-  progress: number;      // 0.0 → 1.0
-  startTime: number;
+  startTime: number;     // ms (performance.now)
   duration: number;      // ms
-  color: string;
-  dropped: boolean;
+  dropAt?: number;       // 0..1: el paquete se pierde en ese punto del enlace
 }
 
-// ── Entrada de log ─────────────────────────────────────────
-export interface LogEntry {
+// ── Log ────────────────────────────────────────────────────
+export type LogLevel = 'info' | 'warning' | 'error' | 'success';
+export type LogParams = Record<string, string | number>;
+
+/** Mensaje del motor: clave de traducción + parámetros (se traduce al mostrarlo). */
+export interface LogMessage {
+  level: LogLevel;
+  source: string;
+  key: string;
+  params?: LogParams;
+}
+
+export interface LogEntry extends LogMessage {
   id: string;
-  timestamp: number;
-  level: 'info' | 'warning' | 'error' | 'success';
-  source: string;        // nombre del dispositivo
-  message: string;
+  timestamp: number;     // Date.now() cuando se muestra
 }
 
-// ── Topología completa (para guardar/cargar JSON) ─────────
+// ── Topología completa (guardar / cargar JSON) ────────────
 export interface Topology {
   version: string;
   name: string;
   createdAt: string;
   devices: Device[];
   links: Link[];
-}
-
-// ── Estado global del simulador ────────────────────────────
-export interface SimulatorState {
-  devices: Device[];
-  links: Link[];
-  packets: PacketAnimation[];
-  logs: LogEntry[];
-  selectedDeviceId: string | null;
-  selectedLinkId: string | null;
-  activeTool: Tool;
-  cableSource: string | null;     // id del dispositivo origen al trazar cable
-  isSimulating: boolean;
-  stepMode: boolean;
 }
