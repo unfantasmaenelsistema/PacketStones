@@ -1,59 +1,73 @@
 // ============================================================
-//  App.tsx  —  Layout principal de la aplicación
+//  App.tsx  —  Layout principal, atajos de teclado, tema e idioma
 // ============================================================
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import { NetworkCanvas } from '@/components/canvas/NetworkCanvas';
-import { LeftPanel }     from '@/components/panels/LeftPanel';
-import { RightPanel }    from '@/components/panels/RightPanel';
-import { LogPanel }      from '@/components/panels/LogPanel';
-import { Toolbar }       from '@/components/ui/Toolbar';
+import { LeftPanel } from '@/components/panels/LeftPanel';
+import { RightPanel } from '@/components/panels/RightPanel';
+import { LogPanel } from '@/components/panels/LogPanel';
+import { Toolbar } from '@/components/ui/Toolbar';
+import { useStore } from '@/engine/store';
+import { useT } from '@/hooks';
+
+const Toast: React.FC = () => {
+  const t = useT();
+  const toast = useStore(s => s.toast);
+  useEffect(() => {
+    if (!toast) return;
+    const id = setTimeout(() => useStore.setState(s => (s.toast?.id === toast.id ? { toast: null } : {})), 3200);
+    return () => clearTimeout(id);
+  }, [toast]);
+  if (!toast) return null;
+  return <div className={`toast ${toast.level}`} role="status">{t(toast.key, toast.params)}</div>;
+};
 
 const App: React.FC = () => {
+  const theme = useStore(s => s.theme);
+  const lang = useStore(s => s.lang);
+  const drawer = useStore(s => s.drawer);
+
+  useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
+  useEffect(() => {
+    document.documentElement.lang = lang;
+    document.title = lang === 'es' ? 'Packet Stones — Simulador de redes' : 'Packet Stones — Network simulator';
+  }, [lang]);
+
+  // Atajos: V / C / X herramientas, Supr borra la selección, Esc cancela
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement;
+      if (el.closest('input, select, textarea, [contenteditable="true"]') || e.ctrlKey || e.metaKey || e.altKey) return;
+      const st = useStore.getState();
+      const k = e.key.toLowerCase();
+      if (k === 'v') st.setTool('select');
+      else if (k === 'c') st.setTool('cable');
+      else if (k === 'x') st.setTool('delete');
+      else if (k === 'delete' || k === 'backspace') { e.preventDefault(); st.deleteSelection(); }
+      else if (k === 'escape') {
+        if (st.cableSource) st.setCableSource(null);
+        else if (st.activeTool !== 'select') st.setTool('select');
+        else { st.selectDevice(null); st.setDrawer(null); }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   return (
-    <div style={styles.root}>
-      {/* Barra superior */}
+    <div className="app">
       <Toolbar />
-
-      {/* Área principal: left | canvas | right */}
-      <div style={styles.main}>
+      <div className="main">
         <LeftPanel />
-
-        {/* Canvas central */}
-        <div style={styles.canvasArea}>
-          <NetworkCanvas />
-        </div>
-
+        <NetworkCanvas />
         <RightPanel />
+        <div className={`scrim ${drawer ? 'show' : ''}`} onClick={() => useStore.getState().setDrawer(null)} />
       </div>
-
-      {/* Panel de log inferior */}
       <LogPanel />
+      <Toast />
     </div>
   );
 };
 
 export default App;
-
-const styles: Record<string, React.CSSProperties> = {
-  root: {
-    display: 'flex',
-    flexDirection: 'column',
-    height: '100vh',
-    width: '100vw',
-    background: '#0d0d12',
-    color: '#e8e8f0',
-    fontFamily: "'DM Sans', 'Segoe UI', sans-serif",
-    overflow: 'hidden',
-  },
-  main: {
-    display: 'flex',
-    flex: 1,
-    overflow: 'hidden',
-  },
-  canvasArea: {
-    flex: 1,
-    overflow: 'hidden',
-    position: 'relative',
-  },
-};

@@ -1,515 +1,443 @@
 // ============================================================
 //  components/panels/RightPanel.tsx
-//  Configuración del dispositivo/enlace seleccionado
+//  Configuración del equipo o cable seleccionado
 // ============================================================
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useStore } from '@/engine/store';
 import { Device, Link, NetworkInterface, RouteEntry } from '@/types/network';
-import { isValidIp } from '@/engine/algorithms/NetworkUtils';
-import { buildConnectedRoutes } from '@/engine/algorithms/RoutingEngine';
-import { v4 as uuidv4 } from 'uuid';
+import {
+  broadcastAddress, cidr, hasValidAddress, ipInNetwork, isHostAddress, isValidIp, isValidMask,
+  maskToPrefix, networkAddress,
+} from '@/engine/algorithms/NetworkUtils';
+import { shortIfName } from '@/engine/factory';
+import { useT } from '@/hooks';
+
+type T = ReturnType<typeof useT>;
+const ICON = { router: '🔀', switch: '🔁', pc: '💻' } as const;
 
 export const RightPanel: React.FC = () => {
-  const {
-    devices, links,
-    selectedDeviceId, selectedLinkId,
-    updateDevice, removeDevice,
-    toggleDeviceStatus, toggleLinkStatus,
-    sendPing, addRoute, removeRoute,
-    saveTopology, loadTopology,
-  } = useStore();
+  const drawer = useStore(s => s.drawer);
+  const device = useStore(s => s.devices.find(d => d.id === s.selectedDeviceId));
+  const link = useStore(s => s.links.find(l => l.id === s.selectedLinkId));
 
-  const device = devices.find(d => d.id === selectedDeviceId);
-  const link = links.find(l => l.id === selectedLinkId);
-
-  if (!device && !link) return <EmptyPanel />;
-  if (link)   return <LinkConfig link={link} toggleStatus={() => toggleLinkStatus(link.id)} />;
-  if (device) return (
-    <DeviceConfig
-      device={device}
-      updateDevice={updateDevice}
-      removeDevice={removeDevice}
-      toggleStatus={() => toggleDeviceStatus(device.id)}
-      sendPing={sendPing}
-      addRoute={addRoute}
-      removeRoute={removeRoute}
-      saveTopology={saveTopology}
-      loadTopology={loadTopology}
-    />
+  return (
+    <aside className={`side right ${drawer === 'right' ? 'open' : ''}`}>
+      {link ? <LinkPanel key={link.id} link={link} />
+        : device ? <DevicePanel key={device.id} device={device} />
+          : <EmptyPanel />}
+    </aside>
   );
-  return null;
 };
 
-// ── Panel vacío ────────────────────────────────────────────
+// ── Sin selección ─────────────────────────────────────────
 const EmptyPanel: React.FC = () => {
-  const { saveTopology, loadTopology, devices, links } = useStore();
-  const [topoName, setTopoName] = useState('mi-red');
-
-  const handleSave = () => {
-    const json = saveTopology(topoName);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `${topoName}.json`; a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const handleLoad = () => {
-    const input = document.createElement('input');
-    input.type = 'file'; input.accept = '.json';
-    input.onchange = (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = (ev) => loadTopology(ev.target?.result as string);
-      reader.readAsText(file);
-    };
-    input.click();
-  };
-
+  const t = useT();
+  const devices = useStore(s => s.devices);
+  const links = useStore(s => s.links);
+  const up = devices.filter(d => d.status === 'up').length;
   return (
-    <aside style={styles.panel}>
-      <div style={styles.header}>
-        <span style={styles.headerIcon}>📋</span>
-        <span style={styles.headerTitle}>Información</span>
-      </div>
-
-      <div style={styles.body}>
-        <div style={styles.hint}>
-          Selecciona un dispositivo o enlace para configurarlo.
+    <>
+      <div className="side-head"><span className="icon">📋</span><h2>{t('info.title')}</h2></div>
+      <div className="side-body">
+        <p className="hint">{t('info.hint')}</p>
+        <div className="stats">
+          <div className="stat"><b>{devices.length}</b><span>{t('info.devices')}</span></div>
+          <div className="stat"><b>{links.length}</b><span>{t('info.links')}</span></div>
+          <div className="stat"><b>{up}</b><span>{t('info.up')}</span></div>
+          <div className="stat"><b>{devices.length - up}</b><span>{t('info.down')}</span></div>
         </div>
-
-        <div style={styles.statsGrid}>
-          <Stat label="Dispositivos" value={devices.length} />
-          <Stat label="Enlaces" value={links.length} />
-          <Stat label="Activos" value={devices.filter(d => d.status === 'up').length} />
-          <Stat label="Caídos" value={devices.filter(d => d.status === 'down').length} />
-        </div>
-
-        <div style={styles.sectionTitle}>GUARDAR / CARGAR</div>
-        <input
-          style={styles.input}
-          value={topoName}
-          onChange={e => setTopoName(e.target.value)}
-          placeholder="Nombre de la topología"
-        />
-        <button style={{ ...styles.btn, ...styles.btnPrimary }} onClick={handleSave}>
-          💾 Guardar JSON
-        </button>
-        <button style={{ ...styles.btn }} onClick={handleLoad}>
-          📂 Cargar JSON
-        </button>
+        <div className="sec-title">{t('info.howto')}</div>
+        <ol className="steps">
+          <li>{t('info.step1')}</li>
+          <li>{t('info.step2')}</li>
+          <li>{t('info.step3')}</li>
+          <li>{t('info.step4')}</li>
+        </ol>
+        <p className="hint" style={{ marginTop: 12 }}>{t('info.shortcuts')}</p>
       </div>
-    </aside>
+    </>
   );
 };
 
-// ── Stat card ──────────────────────────────────────────────
-const Stat: React.FC<{ label: string; value: number }> = ({ label, value }) => (
-  <div style={styles.statCard}>
-    <div style={styles.statValue}>{value}</div>
-    <div style={styles.statLabel}>{label}</div>
-  </div>
-);
-
-// ── Config de enlace ───────────────────────────────────────
-const LinkConfig: React.FC<{ link: Link; toggleStatus: () => void }> = ({ link, toggleStatus }) => {
-  const { updateDevice, devices, links } = useStore();
-  const [latency, setLatency] = useState(link.latency);
-  const [loss, setLoss] = useState(link.packetLoss);
-
-  const srcDevice = devices.find(d => d.id === link.sourceDeviceId);
-  const tgtDevice = devices.find(d => d.id === link.targetDeviceId);
-
-  const applyChanges = () => {
-    // Actualizar el link directamente en el store
-    useStore.setState(s => ({
-      links: s.links.map(l =>
-        l.id === link.id ? { ...l, latency, packetLoss: loss } : l
-      ),
-    }));
-  };
+// ── Cable ─────────────────────────────────────────────────
+const LinkPanel: React.FC<{ link: Link }> = ({ link }) => {
+  const t = useT();
+  const devices = useStore(s => s.devices);
+  const { toggleLink, updateLink, removeLink } = useStore.getState();
+  const a = devices.find(d => d.id === link.sourceDeviceId);
+  const b = devices.find(d => d.id === link.targetDeviceId);
+  const ia = a?.interfaces.find(i => i.id === link.sourceInterfaceId);
+  const ib = b?.interfaces.find(i => i.id === link.targetInterfaceId);
 
   return (
-    <aside style={styles.panel}>
-      <div style={styles.header}>
-        <span style={styles.headerIcon}>🔌</span>
-        <span style={styles.headerTitle}>Enlace</span>
-        <StatusBadge status={link.status} />
+    <>
+      <div className="side-head">
+        <span className="icon">🔌</span><h2>{t('link.title')}</h2>
+        <span className={`badge ${link.status}`}>{link.status}</span>
       </div>
-      <div style={styles.body}>
-        <Row label="Origen" value={srcDevice?.hostname ?? '?'} />
-        <Row label="Destino" value={tgtDevice?.hostname ?? '?'} />
-        <Row label="Estado" value={link.status.toUpperCase()} />
-        <Row label="Ancho de banda" value={`${link.bandwidth} Mbps`} />
+      <div className="side-body">
+        <div className="sec-title">{t('link.ends')}</div>
+        <div className="card">
+          <div className="card-meta"><b>{a?.hostname}</b> <span className="mono">{ia?.name}</span></div>
+          <div className="card-meta" style={{ textAlign: 'center' }}>↕</div>
+          <div className="card-meta"><b>{b?.hostname}</b> <span className="mono">{ib?.name}</span></div>
+        </div>
 
-        <div style={styles.sectionTitle}>PARÁMETROS</div>
-        <SliderRow
-          label="Latencia (ms)"
-          value={latency}
-          min={1} max={500}
-          onChange={setLatency}
-        />
-        <SliderRow
-          label="Pérdida (%)"
-          value={loss}
-          min={0} max={100}
-          onChange={setLoss}
-        />
-        <button style={{ ...styles.btn, ...styles.btnPrimary }} onClick={applyChanges}>
-          Aplicar
+        <div className="sec-title">{t('link.params')}</div>
+        <Slider label={t('link.latency')} value={link.latency} min={1} max={500} onChange={v => updateLink(link.id, { latency: v })} />
+        <Slider label={t('link.loss')} value={link.packetLoss} min={0} max={100} onChange={v => updateLink(link.id, { packetLoss: v })} />
+
+        <button className={`btn ${link.status === 'up' ? 'danger' : 'success'}`} onClick={() => toggleLink(link.id)}>
+          {link.status === 'up' ? `⬇️ ${t('link.down')}` : `⬆️ ${t('link.up')}`}
         </button>
-        <button
-          style={{ ...styles.btn, ...(link.status === 'down' ? styles.btnSuccess : styles.btnDanger) }}
-          onClick={toggleStatus}
-        >
-          {link.status === 'up' ? '⬇️ Bajar enlace' : '⬆️ Subir enlace'}
-        </button>
+        <button className="btn ghost-danger" onClick={() => removeLink(link.id)}>🗑️ {t('link.delete')}</button>
       </div>
-    </aside>
+    </>
   );
 };
 
-// ── Config de dispositivo ──────────────────────────────────
-const DeviceConfig: React.FC<{
-  device: Device;
-  updateDevice: (id: string, updates: Partial<Device>) => void;
-  removeDevice: (id: string) => void;
-  toggleStatus: () => void;
-  sendPing: (sourceId: string, destIp: string) => void;
-  addRoute: (deviceId: string, route: RouteEntry) => void;
-  removeRoute: (deviceId: string, idx: number) => void;
-  saveTopology: (name: string) => string;
-  loadTopology: (json: string) => void;
-}> = ({ device, updateDevice, removeDevice, toggleStatus, sendPing, addRoute, removeRoute }) => {
-  const [hostname, setHostname] = useState(device.hostname);
-  const [pingDest, setPingDest] = useState('');
-  const [gateway, setGateway] = useState(device.defaultGateway ?? '');
+const Slider: React.FC<{ label: string; value: number; min: number; max: number; onChange: (v: number) => void }> =
+  ({ label, value, min, max, onChange }) => (
+    <label style={{ display: 'block', marginBottom: 10 }}>
+      <span style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--muted)', marginBottom: 3 }}>
+        <span>{label}</span><span className="mono" style={{ color: 'var(--text-2)' }}>{value}</span>
+      </span>
+      <input type="range" min={min} max={max} value={value} onChange={e => onChange(Number(e.target.value))} />
+    </label>
+  );
 
-  const [newRoute, setNewRoute] = useState<Partial<RouteEntry>>({
-    destination: '', subnetMask: '255.255.255.0', nextHop: '', interface: '', metric: 1, type: 'static',
-  });
-
-  const applyHostname = () => {
-    if (hostname.trim()) updateDevice(device.id, { hostname: hostname.trim() });
-  };
-
-  const updateIface = (ifaceId: string, field: keyof NetworkInterface, value: string) => {
-    const updated = device.interfaces.map(i =>
-      i.id === ifaceId ? { ...i, [field]: value } : i
-    );
-    updateDevice(device.id, { interfaces: updated });
-  };
-
-  const handlePing = () => {
-    if (pingDest.trim()) sendPing(device.id, pingDest.trim());
-  };
-
-  const applyGateway = () => {
-    updateDevice(device.id, { defaultGateway: gateway });
-  };
-
-  const handleAddRoute = () => {
-    if (!newRoute.destination || !newRoute.nextHop) return;
-    addRoute(device.id, {
-      ...newRoute as RouteEntry,
-      id: uuidv4(),
-    } as RouteEntry);
-    setNewRoute({ destination: '', subnetMask: '255.255.255.0', nextHop: '', interface: '', metric: 1, type: 'static' });
-  };
+// ── Equipo ────────────────────────────────────────────────
+const DevicePanel: React.FC<{ device: Device }> = ({ device }) => {
+  const t = useT();
+  const { renameDevice, toggleDevice, removeDevice } = useStore.getState();
+  const [name, setName] = useState(device.hostname);
+  useEffect(() => setName(device.hostname), [device.hostname]);
 
   return (
-    <aside style={styles.panel}>
-      <div style={styles.header}>
-        <span style={styles.headerIcon}>
-          {device.type === 'router' ? '🔀' : device.type === 'switch' ? '🔁' : '💻'}
-        </span>
-        <span style={styles.headerTitle}>{device.type.toUpperCase()}</span>
-        <StatusBadge status={device.status} />
+    <>
+      <div className="side-head">
+        <span className="icon">{ICON[device.type]}</span>
+        <h2>{device.hostname}</h2>
+        <span className={`badge ${device.status}`}>{device.status}</span>
       </div>
-
-      <div style={styles.body}>
-        {/* Hostname */}
-        <div style={styles.sectionTitle}>GENERAL</div>
-        <div style={styles.fieldRow}>
+      <div className="side-body">
+        <div className="sec-title">{t('dev.general')}</div>
+        <div className="row">
           <input
-            style={styles.input}
-            value={hostname}
-            onChange={e => setHostname(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && applyHostname()}
-            placeholder="hostname"
+            className="input" value={name} maxLength={32} aria-label={t('dev.hostname')}
+            onChange={e => setName(e.target.value)}
+            onBlur={() => renameDevice(device.id, name)}
+            onKeyDown={e => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
           />
-          <button style={{ ...styles.btnSmall, ...styles.btnPrimary }} onClick={applyHostname}>✓</button>
+        </div>
+        <div className="row">
+          <button className={`btn small ${device.status === 'up' ? 'danger' : 'success'}`} style={{ flex: 1 }} onClick={() => toggleDevice(device.id)}>
+            {device.status === 'up' ? `⏻ ${t('dev.powerOff')}` : `⏻ ${t('dev.powerOn')}`}
+          </button>
+          <button className="btn small ghost-danger" onClick={() => removeDevice(device.id)} title={t('dev.delete')} aria-label={t('dev.delete')}>🗑️</button>
         </div>
 
-        <button
-          style={{ ...styles.btn, ...(device.status === 'down' ? styles.btnSuccess : styles.btnDanger), marginBottom: 4 }}
-          onClick={toggleStatus}
-        >
-          {device.status === 'up' ? '⬇️ Apagar' : '⬆️ Encender'}
-        </button>
+        {device.type !== 'switch' && <PingBox device={device} t={t} />}
 
-        <button style={{ ...styles.btn, color: '#f87171' }} onClick={() => removeDevice(device.id)}>
-          🗑️ Eliminar dispositivo
-        </button>
+        {device.type === 'pc' && <PcNetwork device={device} t={t} />}
 
-        {/* Interfaces */}
-        <div style={styles.sectionTitle}>INTERFACES</div>
-        {device.interfaces.map(iface => (
-          <div key={iface.id} style={styles.ifaceCard}>
-            <div style={styles.ifaceName}>
-              {iface.name}
-              <span style={{
-                marginLeft: 6, fontSize: 9, padding: '1px 5px', borderRadius: 4,
-                background: iface.status === 'up' ? '#14532d' : '#450a0a',
-                color: iface.status === 'up' ? '#22c55e' : '#ef4444',
-              }}>{iface.status.toUpperCase()}</span>
-              {iface.connectedLinkId && <span style={{ marginLeft: 4, fontSize: 9, color: '#585870' }}>conectado</span>}
-            </div>
-            {device.type !== 'switch' && (
-              <>
-                <div style={styles.ifaceRow}>
-                  <span style={styles.ifaceLabel}>IP</span>
-                  <input
-                    style={styles.ifaceInput}
-                    value={iface.ipAddress}
-                    onChange={e => updateIface(iface.id, 'ipAddress', e.target.value)}
-                    placeholder="0.0.0.0"
-                  />
-                </div>
-                <div style={styles.ifaceRow}>
-                  <span style={styles.ifaceLabel}>Máscara</span>
-                  <input
-                    style={styles.ifaceInput}
-                    value={iface.subnetMask}
-                    onChange={e => updateIface(iface.id, 'subnetMask', e.target.value)}
-                    placeholder="255.255.255.0"
-                  />
-                </div>
-              </>
-            )}
-            <div style={styles.ifaceRow}>
-              <span style={styles.ifaceLabel}>MAC</span>
-              <span style={{ fontSize: 9, color: '#585870', fontFamily: 'monospace' }}>{iface.macAddress}</span>
-            </div>
-          </div>
-        ))}
-
-        {/* PC: Gateway */}
-        {device.type === 'pc' && (
-          <>
-            <div style={styles.sectionTitle}>RED</div>
-            <div style={styles.ifaceRow}>
-              <span style={styles.ifaceLabel}>Gateway</span>
-              <input
-                style={styles.ifaceInput}
-                value={gateway}
-                onChange={e => setGateway(e.target.value)}
-                onBlur={applyGateway}
-                placeholder="192.168.1.1"
-              />
-            </div>
-          </>
-        )}
-
-        {/* PC: Ping */}
-        {device.type === 'pc' && (
-          <>
-            <div style={styles.sectionTitle}>SIMULACIÓN</div>
-            <div style={styles.fieldRow}>
-              <input
-                style={styles.input}
-                value={pingDest}
-                onChange={e => setPingDest(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handlePing()}
-                placeholder="IP destino ping"
-              />
-              <button
-                style={{ ...styles.btnSmall, ...styles.btnPrimary }}
-                onClick={handlePing}
-                disabled={!pingDest.trim()}
-              >▶</button>
-            </div>
-          </>
-        )}
-
-        {/* Router: Tabla de rutas */}
         {device.type === 'router' && (
           <>
-            <div style={styles.sectionTitle}>TABLA DE RUTAS</div>
-            {(device.routingTable ?? []).length === 0
-              ? <div style={styles.hint}>Sin rutas configuradas</div>
-              : (device.routingTable ?? []).map((route, idx) => (
-                <div key={idx} style={styles.routeRow}>
-                  <div style={styles.routeNet}>{route.destination}/{route.subnetMask}</div>
-                  <div style={styles.routeHop}>{route.nextHop} [{route.metric}]</div>
-                  <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                    <span style={{
-                      fontSize: 9, padding: '1px 5px', borderRadius: 4,
-                      background: route.type === 'connected' ? '#1e3a5f' : route.type === 'rip' ? '#3a1e1e' : '#1e1e3a',
-                      color: route.type === 'connected' ? '#60a5fa' : route.type === 'rip' ? '#f87171' : '#a78bfa',
-                    }}>{route.type}</span>
-                    {route.type === 'static' && (
-                      <button
-                        style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: 12 }}
-                        onClick={() => removeRoute(device.id, idx)}
-                      >✕</button>
-                    )}
-                  </div>
-                </div>
-              ))
-            }
-            {/* Añadir ruta estática */}
-            <div style={{ marginTop: 8, padding: 8, background: 'rgba(255,255,255,0.03)', borderRadius: 8, border: '1px solid #1e2a45' }}>
-              <div style={{ fontSize: 10, color: '#585870', marginBottom: 6 }}>AÑADIR RUTA ESTÁTICA</div>
-              <input style={styles.input} placeholder="Destino (ej: 10.0.0.0)"
-                value={newRoute.destination} onChange={e => setNewRoute(p => ({ ...p, destination: e.target.value }))} />
-              <input style={{ ...styles.input, marginTop: 4 }} placeholder="Máscara"
-                value={newRoute.subnetMask} onChange={e => setNewRoute(p => ({ ...p, subnetMask: e.target.value }))} />
-              <input style={{ ...styles.input, marginTop: 4 }} placeholder="Next-hop"
-                value={newRoute.nextHop} onChange={e => setNewRoute(p => ({ ...p, nextHop: e.target.value }))} />
-              <input style={{ ...styles.input, marginTop: 4 }} placeholder="Interfaz (ej: Gi0/0)"
-                value={newRoute.interface} onChange={e => setNewRoute(p => ({ ...p, interface: e.target.value }))} />
-              <button style={{ ...styles.btn, ...styles.btnPrimary, marginTop: 6 }} onClick={handleAddRoute}>
-                + Añadir ruta
-              </button>
-            </div>
+            <div className="sec-title">{t('dev.interfaces')}</div>
+            {device.interfaces.map(i => <IfaceEditor key={i.id} device={device} iface={i} t={t} />)}
+            <RouterRouting device={device} t={t} />
           </>
         )}
 
-        {/* Switch: tabla MAC */}
-        {device.type === 'switch' && (
-          <>
-            <div style={styles.sectionTitle}>TABLA MAC</div>
-            {(device.macTable ?? []).length === 0
-              ? <div style={styles.hint}>Tabla vacía (se llena durante la simulación)</div>
-              : (device.macTable ?? []).map((entry, idx) => (
-                <div key={idx} style={styles.routeRow}>
-                  <span style={{ fontSize: 9, fontFamily: 'monospace', color: '#9090a8' }}>{entry.macAddress}</span>
-                  <span style={{ fontSize: 9, color: '#585870' }}>→ {entry.port}</span>
-                </div>
-              ))
-            }
-          </>
-        )}
+        {device.type === 'switch' && <SwitchInfo device={device} t={t} />}
+
+        {device.type !== 'switch' && <ArpTable device={device} t={t} />}
       </div>
-    </aside>
+    </>
   );
 };
 
-// ── Componentes auxiliares ────────────────────────────────
-const Row: React.FC<{ label: string; value: string }> = ({ label, value }) => (
-  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-    <span style={{ fontSize: 11, color: '#585870' }}>{label}</span>
-    <span style={{ fontSize: 11, color: '#9090a8', fontFamily: 'monospace' }}>{value}</span>
-  </div>
-);
+/** «conectada a Router1 (Gi0/0)» o «libre». */
+function usePeerLabel(iface: NetworkInterface, t: T) {
+  const devices = useStore(s => s.devices);
+  const links = useStore(s => s.links);
+  const link = links.find(l => l.id === iface.connectedLinkId);
+  if (!link) return { text: t('if.free'), up: false };
+  const mine = link.sourceInterfaceId === iface.id;
+  const peer = devices.find(d => d.id === (mine ? link.targetDeviceId : link.sourceDeviceId));
+  const pIf = peer?.interfaces.find(i => i.id === (mine ? link.targetInterfaceId : link.sourceInterfaceId));
+  return {
+    text: `${t('if.connectedTo')} ${peer?.hostname ?? '?'} (${shortIfName(pIf?.name ?? '?')})`,
+    up: link.status === 'up' && peer?.status === 'up' && iface.status === 'up' && pIf?.status === 'up',
+  };
+}
 
-const StatusBadge: React.FC<{ status: string }> = ({ status }) => (
-  <span style={{
-    marginLeft: 'auto',
-    fontSize: 10, fontWeight: 700,
-    padding: '2px 8px', borderRadius: 10,
-    background: status === 'up' ? '#14532d' : '#450a0a',
-    color: status === 'up' ? '#22c55e' : '#ef4444',
-  }}>
-    {status.toUpperCase()}
-  </span>
-);
+// ── Editor de IP/máscara de una interfaz (PC o router) ─────
+const IfaceEditor: React.FC<{ device: Device; iface: NetworkInterface; t: T; compact?: boolean }> = ({ device, iface, t, compact }) => {
+  const { setInterface } = useStore.getState();
+  const devices = useStore(s => s.devices);
+  const [ip, setIp] = useState(iface.ipAddress);
+  const [mask, setMask] = useState(iface.subnetMask);
+  useEffect(() => { setIp(iface.ipAddress); setMask(iface.subnetMask); }, [iface.ipAddress, iface.subnetMask]);
+  const peer = usePeerLabel(iface, t);
 
-const SliderRow: React.FC<{
-  label: string; value: number; min: number; max: number;
-  onChange: (v: number) => void;
-}> = ({ label, value, min, max, onChange }) => (
-  <div style={{ marginBottom: 10 }}>
-    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-      <span style={{ fontSize: 11, color: '#585870' }}>{label}</span>
-      <span style={{ fontSize: 11, color: '#9090a8', fontFamily: 'monospace' }}>{value}</span>
+  const ipErr = ip && !isValidIp(ip) ? t('if.invalidIp') : '';
+  const maskErr = mask && !isValidMask(mask) ? t('if.invalidMask') : '';
+  let warn = '';
+  if (!ipErr && !maskErr && ip && mask) {
+    if (!isHostAddress(ip, mask)) warn = t('if.netOrBcast');
+    const dup = devices.find(d => d.interfaces.some(i => i.id !== iface.id && i.ipAddress === ip));
+    if (dup) warn = t('if.duplicate', { host: dup.hostname });
+  }
+
+  const commit = () => {
+    const nextIp = ip.trim();
+    const nextMask = mask.trim();
+    if ((nextIp && !isValidIp(nextIp)) || (nextMask && !isValidMask(nextMask))) return;
+    if (nextIp !== iface.ipAddress || nextMask !== iface.subnetMask) {
+      setInterface(device.id, iface.id, { ipAddress: nextIp, subnetMask: nextMask || '255.255.255.0' });
+    }
+  };
+  const onKey = (e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && (e.target as HTMLInputElement).blur();
+
+  return (
+    <div className="card">
+      {!compact && (
+        <div className="card-head">
+          <b className="mono">{iface.name}</b>
+          <span className={`badge ${peer.up ? 'up' : 'down'}`}>{peer.up ? 'up' : 'down'}</span>
+        </div>
+      )}
+      <div className="field">
+        <label htmlFor={`ip-${iface.id}`}>{t('if.ip')}</label>
+        <input id={`ip-${iface.id}`} className={`input mono ${ipErr ? 'invalid' : ''}`} value={ip} placeholder="192.168.1.10"
+          onChange={e => setIp(e.target.value)} onBlur={commit} onKeyDown={onKey} spellCheck={false} inputMode="decimal" />
+      </div>
+      {ipErr && <div className="err">{ipErr}</div>}
+      <div className="field">
+        <label htmlFor={`mask-${iface.id}`}>{t('if.mask')}</label>
+        <input id={`mask-${iface.id}`} className={`input mono ${maskErr ? 'invalid' : ''}`} value={mask} placeholder="255.255.255.0"
+          onChange={e => setMask(e.target.value)} onBlur={commit} onKeyDown={onKey} spellCheck={false} inputMode="decimal" />
+      </div>
+      {maskErr && <div className="err">{maskErr}</div>}
+      {warn && <div className="err" style={{ color: 'var(--warn)' }}>{warn}</div>}
+      {hasValidAddress(iface) && (
+        <div className="card-meta">
+          {t('if.net')} <span className="mono">{cidr(iface.ipAddress, iface.subnetMask)}</span> · bcast <span className="mono">{broadcastAddress(iface.ipAddress, iface.subnetMask)}</span>
+        </div>
+      )}
+      <div className="card-meta">{t('if.mac')} <span className="mono">{iface.macAddress}</span></div>
+      <div className="card-meta">{peer.text}</div>
+      {device.type === 'router' && (
+        <>
+          <label className="check">
+            <input type="checkbox" checked={iface.status === 'down'}
+              onChange={e => setInterface(device.id, iface.id, { status: e.target.checked ? 'down' : 'up' })} />
+            <span className="mono">{t('if.shutdown')}</span>
+          </label>
+          <label className="check" style={{ marginTop: 0 }}>
+            <input type="checkbox" checked={!!iface.dhcpServer}
+              onChange={e => setInterface(device.id, iface.id, { dhcpServer: e.target.checked })} />
+            <span>{t('if.dhcpServer')}</span>
+          </label>
+        </>
+      )}
     </div>
-    <input
-      type="range" min={min} max={max} value={value}
-      onChange={e => onChange(Number(e.target.value))}
-      style={{ width: '100%' }}
-    />
-  </div>
-);
-
-// ── Estilos ────────────────────────────────────────────────
-const styles: Record<string, React.CSSProperties> = {
-  panel: {
-    width: 240, minWidth: 240,
-    background: '#111520',
-    borderLeft: '1px solid #1e2a45',
-    display: 'flex', flexDirection: 'column',
-    overflowY: 'auto',
-  },
-  header: {
-    padding: '14px 16px',
-    display: 'flex', alignItems: 'center', gap: 8,
-    borderBottom: '1px solid #1e2a45',
-    position: 'sticky', top: 0,
-    background: '#111520', zIndex: 1,
-  },
-  headerIcon: { fontSize: 20 },
-  headerTitle: { fontFamily: "'Syne', sans-serif", fontSize: 13, fontWeight: 700, color: '#e8e8f0' },
-  body: { padding: '12px 14px', flex: 1 },
-  sectionTitle: {
-    fontSize: 10, fontWeight: 700,
-    letterSpacing: '1.5px', color: '#585870',
-    marginTop: 14, marginBottom: 8,
-    textTransform: 'uppercase' as const,
-  },
-  hint: { fontSize: 12, color: '#585870', lineHeight: 1.5, marginBottom: 8 },
-  fieldRow: { display: 'flex', gap: 6, marginBottom: 6 },
-  input: {
-    flex: 1, padding: '7px 10px',
-    background: '#1a1a24', border: '1px solid #2e2e3a',
-    borderRadius: 8, color: '#e8e8f0', fontSize: 12,
-    outline: 'none', width: '100%', marginBottom: 4,
-  },
-  btn: {
-    display: 'block', width: '100%', padding: '8px 10px', marginBottom: 4,
-    background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)',
-    borderRadius: 8, cursor: 'pointer', color: '#9090a8', fontSize: 12, fontWeight: 500,
-    textAlign: 'left' as const,
-  },
-  btnSmall: {
-    padding: '7px 12px', background: 'rgba(255,255,255,0.05)',
-    border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8,
-    cursor: 'pointer', color: '#e8e8f0', fontSize: 12, flexShrink: 0,
-  },
-  btnPrimary: { background: 'rgba(124,92,252,0.15)', borderColor: '#7c5cfc', color: '#c084fc' },
-  btnDanger:  { background: 'rgba(239,68,68,0.1)',   borderColor: '#ef4444', color: '#f87171' },
-  btnSuccess: { background: 'rgba(34,197,94,0.1)',   borderColor: '#22c55e', color: '#4ade80' },
-  ifaceCard: {
-    padding: 8, marginBottom: 6,
-    background: 'rgba(255,255,255,0.02)',
-    border: '1px solid #1e2a45', borderRadius: 8,
-  },
-  ifaceName: { fontSize: 11, fontWeight: 700, color: '#9090a8', marginBottom: 4, fontFamily: 'monospace' },
-  ifaceRow: { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 },
-  ifaceLabel: { fontSize: 10, color: '#585870', width: 50, flexShrink: 0 },
-  ifaceInput: {
-    flex: 1, padding: '4px 8px',
-    background: '#1a1a24', border: '1px solid #2e2e3a',
-    borderRadius: 6, color: '#e8e8f0', fontSize: 11, outline: 'none',
-  },
-  routeRow: {
-    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-    padding: '4px 6px', marginBottom: 4,
-    background: 'rgba(255,255,255,0.02)', borderRadius: 6,
-    border: '1px solid #1e2a45',
-  },
-  routeNet: { fontSize: 10, fontFamily: 'monospace', color: '#9090a8' },
-  routeHop: { fontSize: 9, color: '#585870' },
-  statsGrid: {
-    display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 14,
-  },
-  statCard: {
-    padding: 10, textAlign: 'center' as const,
-    background: 'rgba(255,255,255,0.03)', border: '1px solid #1e2a45', borderRadius: 8,
-  },
-  statValue: { fontSize: 20, fontWeight: 700, color: '#7c5cfc', fontFamily: 'monospace' },
-  statLabel: { fontSize: 10, color: '#585870', marginTop: 2 },
+  );
 };
+
+// ── PC: interfaz, gateway y DHCP ───────────────────────────
+const PcNetwork: React.FC<{ device: Device; t: T }> = ({ device, t }) => {
+  const { setGateway, dhcp } = useStore.getState();
+  const iface = device.interfaces[0];
+  const [gw, setGw] = useState(device.defaultGateway ?? '');
+  useEffect(() => setGw(device.defaultGateway ?? ''), [device.defaultGateway]);
+  const gwErr = gw && !isValidIp(gw) ? t('if.invalidIp')
+    : gw && hasValidAddress(iface) && !ipInNetwork(gw, iface.ipAddress, iface.subnetMask) ? t('pc.gwOutside') : '';
+
+  const commit = () => {
+    const v = gw.trim();
+    if (v && !isValidIp(v)) return;
+    if (v !== (device.defaultGateway ?? '')) setGateway(device.id, v);
+  };
+
+  return (
+    <>
+      <div className="sec-title">{t('pc.network')} · {iface.name}</div>
+      <IfaceEditor device={device} iface={iface} t={t} compact />
+      <div className="field">
+        <label htmlFor="pc-gw">{t('pc.gateway')}</label>
+        <input id="pc-gw" className={`input mono ${gw && !isValidIp(gw) ? 'invalid' : ''}`} value={gw} placeholder="192.168.1.1"
+          onChange={e => setGw(e.target.value)} onBlur={commit}
+          onKeyDown={e => e.key === 'Enter' && (e.target as HTMLInputElement).blur()} spellCheck={false} inputMode="decimal" />
+      </div>
+      {gwErr && <div className="err" style={gw && isValidIp(gw) ? { color: 'var(--warn)' } : undefined}>{gwErr}</div>}
+      <button className="btn" onClick={() => dhcp(device.id)} disabled={device.status !== 'up'}>🎟️ {t('pc.dhcp')}</button>
+    </>
+  );
+};
+
+// ── Ping ───────────────────────────────────────────────────
+const PingBox: React.FC<{ device: Device; t: T }> = ({ device, t }) => {
+  const { ping } = useStore.getState();
+  const devices = useStore(s => s.devices);
+  const [dest, setDest] = useState('');
+  const [count, setCount] = useState(1);
+  const valid = isValidIp(dest.trim());
+  const send = () => { if (valid) ping(device.id, dest.trim(), count); };
+
+  // Destinos rápidos: IP de los demás PC y routers
+  const targets = devices
+    .filter(d => d.id !== device.id && d.type !== 'switch')
+    .flatMap(d => d.interfaces.filter(i => hasValidAddress(i)).slice(0, d.type === 'pc' ? 1 : 4).map(i => ({ host: d.hostname, ip: i.ipAddress })))
+    .slice(0, 12);
+
+  return (
+    <>
+      <div className="sec-title">📡 {t('sim.title')}</div>
+      <div className="row">
+        <input className={`input mono ${dest && !valid ? 'invalid' : ''}`} value={dest} placeholder={t('sim.dest')} aria-label={t('sim.dest')}
+          onChange={e => setDest(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} spellCheck={false} inputMode="decimal" />
+        <select value={count} onChange={e => setCount(Number(e.target.value))} style={{ width: 58 }} aria-label={t('sim.count')} title={t('sim.count')}>
+          <option value={1}>×1</option>
+          <option value={4}>×4</option>
+          <option value={10}>×10</option>
+        </select>
+        <button className="btn small primary" onClick={send} disabled={!valid || device.status !== 'up'} aria-label={t('sim.send')}>▶</button>
+      </div>
+      {targets.length > 0 && (
+        <div className="chips" aria-label={t('sim.targets')}>
+          {targets.map(x => (
+            <button key={x.host + x.ip} className="chip mono" onClick={() => setDest(x.ip)} title={x.host}>{x.ip}</button>
+          ))}
+        </div>
+      )}
+    </>
+  );
+};
+
+// ── Router: RIP, tabla de rutas y rutas estáticas ──────────
+const RouterRouting: React.FC<{ device: Device; t: T }> = ({ device, t }) => {
+  const { setRip, addStaticRoute, removeStaticRoute } = useStore.getState();
+  const [dest, setDest] = useState('');
+  const [mask, setMask] = useState('255.255.255.0');
+  const [hop, setHop] = useState('');
+  const [ifName, setIfName] = useState('');
+  const [err, setErr] = useState('');
+
+  const add = () => {
+    if (!isValidIp(dest.trim())) return setErr(t('route.errDest'));
+    if (!isValidMask(mask.trim())) return setErr(t('route.errMask'));
+    if (!isValidIp(hop.trim())) return setErr(t('route.errHop'));
+    setErr('');
+    const route: RouteEntry = {
+      destination: networkAddress(dest.trim(), mask.trim()), subnetMask: mask.trim(),
+      nextHop: hop.trim(), interface: ifName, metric: 1, type: 'static',
+    };
+    addStaticRoute(device.id, route);
+    setDest(''); setHop('');
+  };
+
+  const routes = device.routingTable ?? [];
+  return (
+    <>
+      <div className="sec-title">{t('router.routes')}</div>
+      <label className="check">
+        <input type="checkbox" checked={!!device.ripEnabled} onChange={e => setRip(device.id, e.target.checked)} />
+        <span><b>{t('router.rip')}</b><br /><span className="card-meta">{t('router.ripHint')}</span></span>
+      </label>
+      {routes.length === 0 ? <p className="hint">{t('router.noRoutes')}</p> : (
+        <div className="card" style={{ padding: '2px 6px' }}>
+          <table className="table mono">
+            <tbody>
+              {routes.map((r, idx) => (
+                <tr key={idx}>
+                  <td><span className={`badge ${r.type}`}>{r.type === 'connected' ? 'C' : r.type === 'static' ? 'S' : 'R'}</span></td>
+                  <td>{r.destination}/{maskToPrefix(r.subnetMask)}</td>
+                  <td>{r.type === 'connected' ? t('route.direct') : `→ ${r.nextHop}`}<br />
+                    <span style={{ color: 'var(--muted)' }}>{shortIfName(r.interface) || t('route.auto')}{r.type === 'rip' ? ` [120/${r.metric}]` : ''}</span></td>
+                  <td>{r.type === 'static' && (
+                    <button className="x" onClick={() => removeStaticRoute(device.id, r)} title={t('route.remove')} aria-label={t('route.remove')}>✕</button>
+                  )}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="card">
+        <div className="card-head"><b>{t('route.addStatic')}</b></div>
+        <input className="input mono" style={{ marginBottom: 5 }} placeholder={t('route.dest')} value={dest} onChange={e => setDest(e.target.value)} spellCheck={false} />
+        <input className="input mono" style={{ marginBottom: 5 }} placeholder={t('route.mask')} value={mask} onChange={e => setMask(e.target.value)} spellCheck={false} />
+        <input className="input mono" style={{ marginBottom: 5 }} placeholder={t('route.nextHop')} value={hop} onChange={e => setHop(e.target.value)} spellCheck={false}
+          onKeyDown={e => e.key === 'Enter' && add()} />
+        <select value={ifName} onChange={e => setIfName(e.target.value)} style={{ marginBottom: 6 }} aria-label={t('route.iface')}>
+          <option value="">{t('route.iface')}: {t('route.auto')}</option>
+          {device.interfaces.map(i => <option key={i.id} value={i.name}>{i.name}</option>)}
+        </select>
+        {err && <div className="err" style={{ marginLeft: 0 }}>{err}</div>}
+        <button className="btn primary" style={{ marginBottom: 0 }} onClick={add}>+ {t('route.add')}</button>
+      </div>
+    </>
+  );
+};
+
+// ── Switch: puertos y tabla MAC ────────────────────────────
+const SwitchPort: React.FC<{ iface: NetworkInterface; t: T }> = ({ iface, t }) => {
+  const peer = usePeerLabel(iface, t);
+  if (!iface.connectedLinkId) return null;
+  return (
+    <tr>
+      <td><i className={`dot ${peer.up ? '' : 'bad'}`} /></td>
+      <td>{shortIfName(iface.name)}</td>
+      <td>{peer.text}</td>
+    </tr>
+  );
+};
+
+const SwitchInfo: React.FC<{ device: Device; t: T }> = ({ device, t }) => {
+  const used = device.interfaces.filter(i => i.connectedLinkId).length;
+  return (
+    <>
+      <div className="sec-title">{t('sw.ports')} · {used}/{device.interfaces.length}</div>
+      <div className="card" style={{ padding: '2px 6px' }}>
+        <table className="table">
+          <tbody>{device.interfaces.map(i => <SwitchPort key={i.id} iface={i} t={t} />)}</tbody>
+        </table>
+        {used === 0 && <p className="hint" style={{ margin: 6 }}>—</p>}
+      </div>
+      <div className="sec-title">{t('mac.title')}</div>
+      {(device.macTable ?? []).length === 0 ? <p className="hint">{t('mac.empty')}</p> : (
+        <div className="card" style={{ padding: '2px 6px' }}>
+          <table className="table mono">
+            <tbody>
+              {device.macTable!.map(e => (
+                <tr key={e.macAddress}><td>{e.macAddress}</td><td>→ {shortIfName(e.port)}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  );
+};
+
+// ── Caché ARP ──────────────────────────────────────────────
+const ArpTable: React.FC<{ device: Device; t: T }> = ({ device, t }) => (
+  <>
+    <div className="sec-title">{t('arp.title')}</div>
+    {(device.arpTable ?? []).length === 0 ? <p className="hint">{t('arp.empty')}</p> : (
+      <div className="card" style={{ padding: '2px 6px' }}>
+        <table className="table mono">
+          <tbody>
+            {device.arpTable!.map(e => (
+              <tr key={e.interface + e.ip}><td>{e.ip}</td><td>{e.mac}</td>{device.type === 'router' && <td>{shortIfName(e.interface)}</td>}</tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )}
+  </>
+);
